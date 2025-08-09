@@ -703,6 +703,8 @@ def train_model_pipeline(
     train_node_gpu_request: str = "1",
     train_node_memory_request: str = "100Gi",
     trainer_runtime: str = "torch-distributed",
+    # Storage parameters
+    storage_class_name: str = "standard",
 ):
     """Complete pipeline for fine-tuning a large language model.
 
@@ -739,6 +741,7 @@ def train_model_pipeline(
         train_node_memory_request (str, optional): Memory per node (100Gi=basic, 200Gi+=memory-intensive models).
             Defaults to "100Gi".
         trainer_runtime (str, optional): Runtime to use for Kubeflow Trainer. Defaults to "torch-distributed".
+        storage_class_name (str, optional): Storage class name for PVC creation. Defaults to "standard".
     Returns:
         Pipeline object that can be compiled and executed by Kubeflow Pipelines.
 
@@ -754,7 +757,7 @@ def train_model_pipeline(
         pvc_name_suffix="-dataset",
         access_modes=["ReadWriteMany"],
         size="10G",
-        storage_class_name="nfs-csi",
+        storage_class_name=storage_class_name,
     )
 
     prepare_dataset_op = (

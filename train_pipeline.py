@@ -11,13 +11,13 @@ from typing import Optional
 def train_model(
     model_name: str,
     pvc_name: str,
-    epochs: int,
     run_id: str,
     dataset_path: str,
     pvc_path: str,
     output_model: dsl.Output[dsl.Model],
     output_metrics: dsl.Output[dsl.Metrics],
     # Training configuration parameters
+    epochs: int = 10,
     lora_rank: int = 8,
     learning_rate: float = 3e-4,
     batch_size: int = 16,
@@ -41,6 +41,7 @@ def train_model(
     train_node_gpu_request: str = "1",
     train_node_memory_request: str = "100Gi",
     trainer_runtime: str = "torch-distributed",
+    save_merged_model_path: str = None,
 ):
     """Train a large language model using distributed training with LoRA fine-tuning.
 
@@ -52,12 +53,12 @@ def train_model(
     Args:
         model_name (str): HuggingFace model identifier (e.g., "ibm-granite/granite-3.3-8b-instruct").
         pvc_name (str): Name of the Persistent Volume Claim for data storage that is mounted to this component.
-        epochs (int): Number of training epochs.
         run_id (str): Unique identifier for this training run. Use dsl.PIPELINE_JOB_ID_PLACEHOLDER.
         dataset_path (str): Path to the training dataset within the PVC.
         pvc_path (str): Base path within the PVC for storing outputs.
         output_model (dsl.Output[dsl.Model]): Kubeflow output artifact for the trained model.
         output_metrics (dsl.Output[dsl.Metrics]): Kubeflow output artifact for training metrics.
+        epochs (int, optional): Number of training epochs. Defaults to 10.
         lora_rank (int, optional): LoRA adapter rank (lower = fewer parameters, faster training). Defaults to 8.
         learning_rate (float, optional): Learning rate for training optimization. Defaults to 3e-4.
         batch_size (int, optional): Per-device training batch size. Defaults to 16.
@@ -77,12 +78,13 @@ def train_model(
         train_node_gpu_request (str, optional): GPU request per node (e.g., "1", "2"). Defaults to "1".
         train_node_memory_request (str, optional): Memory request per node (e.g., "100Gi", "200Gi"). Defaults to "100Gi".
         trainer_runtime (str, optional): Runtime to use for Kubeflow Trainer. Defaults to "torch-distributed".
+        save_merged_model_path (str, optional): Path to save the merged model (base + LoRA adapter). Useful for saving to the PVC for evaluation. Defaults to None.
     """
     import json
-    import time
     import os
     import shutil
     import textwrap
+    import time
     import inspect
 
     from kubernetes import client as k8s_client, config
@@ -165,10 +167,10 @@ def train_model(
         adam_epsilon: float,
         weight_decay: float,
         use_flash_attention: bool,
+        save_merged_model_path: str = None,
     ):
         import os
         import json
-        import time
         import torch
         from datasets import load_from_disk
         from peft import get_peft_model, LoraConfig
@@ -204,13 +206,10 @@ def train_model(
         metrics_callback = MetricsCallback(is_main_worker)
 
         print("Downloading and loading model")
-        model_kwargs = {
-            "device_map": "auto", 
-            "torch_dtype": torch.float16
-        }
+        model_kwargs = {"device_map": "auto", "torch_dtype": torch.float16}
         if use_flash_attention:
             model_kwargs["attn_implementation"] = "flash_attention_2"
-        
+
         model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
 
         print(f"Using LoRA target modules for {model_name}: {target_modules}")
@@ -229,6 +228,7 @@ def train_model(
         dataset = load_from_disk(dataset_path)
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
+
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         tokenizer.padding_side = "right"
@@ -258,7 +258,6 @@ def train_model(
             save_steps=save_steps,
             save_strategy=save_strategy,
             logging_dir="./logs",
-            output_dir="./granite-yoda-adapter",
             report_to="none",
         )
         trainer = SFTTrainer(
@@ -269,11 +268,7 @@ def train_model(
             callbacks=[metrics_callback],
         )
 
-        training_start_time = time.time()
-
         train_result = trainer.train()
-
-        training_duration = time.time() - training_start_time
 
         if torch.distributed.is_initialized():
             torch.distributed.barrier()
@@ -283,15 +278,36 @@ def train_model(
             print(
                 f"Worker {world_rank} - Skipping model export and metrics (not main worker)"
             )
+            # Clean up distributed process group for non-main workers
+            if torch.distributed.is_initialized():
+                print(f"Worker {world_rank} - Cleaning up distributed process group")
+                torch.distributed.destroy_process_group()
+                print(f"Worker {world_rank} - Distributed process group destroyed")
             return
 
         print("Main worker (rank 0) - Exporting model and metrics...")
 
-        output_path = pvc_path
-        model_output_path = os.path.join(output_path, "granite-yoda-adapter")
+        # Save LoRA adapter
+        model_output_path = os.path.join(pvc_path, "adapter")
         model.save_pretrained(model_output_path)
         tokenizer.save_pretrained(model_output_path)
-        print("Model exported successfully!")
+        print("LoRA adapter exported successfully!")
+
+        # Merge LoRA adapter with base model and save merged model for evaluation
+        if save_merged_model_path:
+            print(
+                f"Merging LoRA adapter with base model and saving to {save_merged_model_path}..."
+            )
+            merged_model = model.merge_and_unload()
+            merged_model.save_pretrained(save_merged_model_path)
+            tokenizer.save_pretrained(save_merged_model_path)
+            print(f"Merged model saved to {save_merged_model_path}")
+
+        # Clean up distributed process group for main worker AFTER model saving
+        if torch.distributed.is_initialized():
+            print(f"Worker {world_rank} - Cleaning up distributed process group")
+            torch.distributed.destroy_process_group()
+            print(f"Worker {world_rank} - Distributed process group destroyed")
 
         print(f"Collecting essential metrics")
         metrics_dict = {}
@@ -340,11 +356,11 @@ def train_model(
                 / metrics_callback.initial_loss
             ) * 100
 
-        with open(os.path.join(output_path, "metrics.json"), "w") as f:
+        with open(os.path.join(pvc_path, "metrics.json"), "w") as f:
             json.dump(metrics_dict, f, indent=2)
 
         print(
-            f"Exported {len(metrics_dict)} metrics to {os.path.join(output_path, 'metrics.json')}"
+            f"Exported {len(metrics_dict)} metrics to {os.path.join(pvc_path, 'metrics.json')}"
         )
         print("Model and metrics exported successfully!")
 
@@ -470,6 +486,7 @@ torchrun ephemeral_component.py"""
                                 "adam_epsilon": adam_epsilon,
                                 "weight_decay": weight_decay,
                                 "use_flash_attention": use_flash_attention,
+                                "save_merged_model_path": save_merged_model_path,
                             }
                         ),
                     },
@@ -608,11 +625,12 @@ torchrun ephemeral_component.py"""
                 exported_count += 1
 
         print(f"Successfully exported {exported_count} metrics to Kubeflow")
+        os.remove(metrics_file_path)
     else:
         print(f"Warning: Metrics file {metrics_file_path} not found")
 
     print("Copying model from PVC to Kubeflow output path...")
-    model_source = os.path.join(pvc_path, "granite-yoda-adapter")
+    model_source = os.path.join(pvc_path, "adapter")
     print(f"Model source: {model_source}")
     print(f"Destination: {output_model.path}")
 
@@ -637,11 +655,220 @@ torchrun ephemeral_component.py"""
         except Exception as e:
             print(f"  Error listing files: {e}")
 
-    output_model.name = "granite-yoda-adapter"
+    output_model.name = f"{model_name}-adapter"
     shutil.copytree(model_source, output_model.path, dirs_exist_ok=True)
     print(f"Model copied successfully from {model_source} to {output_model.path}")
 
     print("=== TrainJob process completed successfully ===")
+
+
+@dsl.component(
+    base_image="registry.access.redhat.com/ubi9/python-311:latest",
+    packages_to_install=[
+        "transformers",
+        "torch",
+        "accelerate",
+        "lm-eval[vllm]",
+        "unitxt",
+    ],
+)
+def evaluate_model(
+    model_path: str,
+    output_metrics: dsl.Output[dsl.Metrics],
+    output_results: dsl.Output[dsl.Artifact],
+    batch_size: int = 1,
+    limit: int = None,
+    max_model_len: int = 4096,
+    gpu_memory_utilization: float = 0.8,
+    dtype: str = "bfloat16",
+    add_bos_token: bool = True,
+    include_classification_tasks: bool = True,
+    include_summarization_tasks: bool = True,
+    verbosity: str = "INFO",
+    max_batch_size: int = None,
+):
+    import logging
+    import os
+    import json
+    import time
+    import shutil
+    from typing import List, Dict, Any
+
+    from lm_eval.tasks.unitxt import task
+    from lm_eval.api.registry import get_model
+    from lm_eval.api.model import LM
+    from lm_eval.evaluator import evaluate
+    from lm_eval.tasks import get_task_dict
+    import torch
+
+    TASK_CONFIGS = {
+        "classification": [
+            {
+                "task": "classification_rte_simple",
+                "recipe": "card=cards.rte,template=templates.classification.multi_class.relation.simple",
+                "group": "classification",
+                "output_type": "generate_until",
+            },
+            {
+                "task": "classification_rte_default",
+                "recipe": "card=cards.rte,template=templates.classification.multi_class.relation.default",
+                "group": "classification",
+                "output_type": "generate_until",
+            },
+            {
+                "task": "classification_rte_wnli",
+                "recipe": "card=cards.wnli,template=templates.classification.multi_class.relation.simple",
+                "group": "classification",
+                "output_type": "generate_until",
+            },
+        ],
+        "summarization": [
+            {
+                "task": "summarization_xsum_formal",
+                "recipe": "card=cards.xsum,template=templates.summarization.abstractive.formal,num_demos=0",
+                "group": "summarization",
+                "output_type": "generate_until",
+            }
+        ],
+    }
+
+    logging.basicConfig(
+        level=getattr(logging, verbosity.upper()),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+    logger = logging.getLogger(__name__)
+
+    os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+    os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
+    logger.info("Validating parameters...")
+
+    if not torch.cuda.is_available():
+        raise ValueError("CUDA is not available")
+
+    if not (0.0 <= gpu_memory_utilization <= 1.0):
+        raise ValueError("gpu_memory_utilization must be between 0.0 and 1.0")
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+
+    if max_model_len <= 0:
+        raise ValueError("max_model_len must be positive")
+
+    if limit is not None and limit <= 0:
+        raise ValueError("limit must be positive or None")
+
+    if not include_classification_tasks and not include_summarization_tasks:
+        raise ValueError(
+            "At least one of include_classification_tasks or include_summarization_tasks must be True"
+        )
+
+    logger.info("Parameter validation passed")
+
+    logger.info("Creating tasks...")
+    start_time = time.time()
+
+    eval_tasks = []
+
+    if include_classification_tasks:
+        logger.info("Adding classification tasks...")
+        classification_configs = TASK_CONFIGS["classification"]
+
+        for config in classification_configs:
+            task_obj = task.Unitxt(config=config)
+            # TODO: Remove after https://github.com/EleutherAI/lm-evaluation-harness/pull/3225 is merged.
+            task_obj.config.task = config["task"]
+            eval_tasks.append(task_obj)
+
+    if include_summarization_tasks:
+        logger.info("Adding summarization tasks...")
+        summarization_config = TASK_CONFIGS["summarization"][0]
+
+        task_obj = task.Unitxt(config=summarization_config)
+        # TODO: Remove after https://github.com/EleutherAI/lm-evaluation-harness/pull/3225 is merged.
+        task_obj.config.task = summarization_config["task"]
+        eval_tasks.append(task_obj)
+
+    task_dict = get_task_dict(eval_tasks)
+    logger.info(f"Created {len(eval_tasks)} tasks in {time.time() - start_time:.2f}s")
+
+    logger.info("Loading model...")
+    start_time = time.time()
+
+    try:
+        model_args = {
+            "add_bos_token": add_bos_token,
+            "dtype": dtype,
+            "max_model_len": max_model_len,
+            "gpu_memory_utilization": gpu_memory_utilization,
+            "pretrained": model_path,
+        }
+
+        model_class = get_model("vllm")
+        additional_config = {
+            "batch_size": batch_size,
+            "max_batch_size": max_batch_size,
+            "device": None,
+        }
+
+        loaded_model = model_class.create_from_arg_obj(model_args, additional_config)
+        logger.info(f"Model loaded successfully in {time.time() - start_time:.2f}s")
+    except Exception as e:
+        logger.error(f"Failed to load model: {e}")
+        raise RuntimeError(f"Model loading failed: {e}")
+
+    logger.info("Starting evaluation...")
+    start_time = time.time()
+
+    results = evaluate(
+        lm=loaded_model,
+        task_dict=task_dict,
+        limit=limit,
+        verbosity=verbosity,
+    )
+
+    logger.info(f"Evaluation completed in {time.time() - start_time:.2f}s")
+
+    logger.info("Saving results...")
+
+    def clean_for_json(obj):
+        """Recursively clean objects to make them JSON serializable."""
+        if isinstance(obj, dict):
+            return {k: clean_for_json(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [clean_for_json(item) for item in obj]
+        elif isinstance(obj, (int, float, str, bool, type(None))):
+            return obj
+        else:
+            # Convert non-serializable objects to string representation
+            return str(obj)
+
+    clean_results = clean_for_json(results)
+
+    output_results.name = "results.json"
+
+    with open(output_results.path, "w") as f:
+        json.dump(clean_results, f, indent=2)
+    logger.info(f"Results saved to {output_results.path}")
+
+    logger.info("Logging metrics...")
+
+    for task_name, task_results in clean_results["results"].items():
+        for metric_name, metric_value in task_results.items():
+            if isinstance(metric_value, (int, float)):
+                # Skip metrics that are 0 due to a bug in the RHOAI UI.
+                # TODO: Fix RHOAI UI to handle 0 values.
+                # TODO: Ignore store_session_info from metrics in RHOAI UI.
+                if metric_value == 0:
+                    continue
+
+                metric_key = f"{task_name}_{metric_name}"
+                output_metrics.log_metric(metric_key, metric_value)
+                logger.debug(f"Logged metric: {metric_key} = {metric_value}")
+
+    logger.info("Metrics logged successfully")
+
+    logger.info("Pipeline completed successfully")
 
 
 @dsl.component(
@@ -674,29 +901,29 @@ def prepare_dataset(output_path: str):
 
 
 @dsl.pipeline(
-    name="Train model",
-    description="Provides simple training of an LLM model",
+    name="Train and evaluate",
+    description="Provides complete training and evaluation of an LLM model",
 )
 def train_model_pipeline(
     model_name: str = "ibm-granite/granite-3.3-8b-instruct",
-    epochs: int = 10,
-    lora_rank: int = 8,
-    learning_rate: float = 3e-4,
-    batch_size: int = 16,
-    max_length: int = 64,
+    train_epochs: int = 10,
+    train_lora_rank: int = 8,
+    train_learning_rate: float = 3e-4,
+    train_batch_size: int = 16,
+    train_max_length: int = 64,
     # Training control parameters
-    max_steps: Optional[int] = None,
-    logging_steps: int = 10,
-    save_steps: Optional[int] = None,
-    save_strategy: str = "epoch",
+    train_max_steps: Optional[int] = None,
+    train_logging_steps: int = 10,
+    train_save_steps: Optional[int] = None,
+    train_save_strategy: str = "epoch",
     # Optimizer parameters
-    optimizer: str = "adamw_torch",
-    adam_beta1: float = 0.9,
-    adam_beta2: float = 0.999,
-    adam_epsilon: float = 1e-8,
-    weight_decay: float = 0.01,
+    train_optimizer: str = "adamw_torch",
+    train_adam_beta1: float = 0.9,
+    train_adam_beta2: float = 0.999,
+    train_adam_epsilon: float = 1e-8,
+    train_weight_decay: float = 0.01,
     # Performance optimization
-    use_flash_attention: bool = False,
+    train_use_flash_attention: bool = False,
     # Infrastructure parameters
     train_num_nodes: int = 2,
     train_node_cpu_request: str = "2",
@@ -704,36 +931,52 @@ def train_model_pipeline(
     train_node_memory_request: str = "100Gi",
     trainer_runtime: str = "torch-distributed",
     # Storage parameters
-    storage_class_name: str = "standard",
+    storage_class_name: Optional[str] = None,
+    storage_size: str = "20Gi",
+    # Evaluation parameters
+    eval_batch_size: int = 2,
+    eval_limit: int = None,
+    eval_max_model_len: int = 4096,
+    eval_gpu_memory_utilization: float = 0.8,
+    eval_dtype: str = "bfloat16",
+    eval_add_bos_token: bool = True,
+    eval_include_classification_tasks: bool = True,
+    eval_include_summarization_tasks: bool = True,
+    eval_verbosity: str = "INFO",
+    eval_max_batch_size: int = None,
+    eval_num_gpus: str = "1",
+    eval_cpu_request: str = "4000m",
+    eval_memory_request: str = "100G",
 ):
-    """Complete pipeline for fine-tuning a large language model.
+    """Complete pipeline for fine-tuning and evaluating a large language model.
 
     This pipeline orchestrates the complete workflow for fine-tuning a large language
-    model using distributed training with LoRA fine-tuning. It handles dataset
-    preparation, storage provisioning, model training, and cleanup.
+    model using distributed training with LoRA fine-tuning, followed by comprehensive
+    evaluation. It handles dataset preparation, storage provisioning, model training,
+    evaluation, and cleanup.
 
     Args:
         model_name (str, optional): HuggingFace model to fine-tune.
             Defaults to "ibm-granite/granite-3.3-8b-instruct".
-        epochs (int, optional): Number of training epochs. Defaults to 10.
-        lora_rank (int, optional): LoRA adapter complexity (8=efficient, 16=more expressive).
+        train_epochs (int, optional): Number of training epochs. Defaults to 10.
+        train_lora_rank (int, optional): LoRA adapter complexity (8=efficient, 16=more expressive).
             Defaults to 8.
-        learning_rate (float, optional): Training learning rate (3e-4 is a good starting point).
+        train_learning_rate (float, optional): Training learning rate (3e-4 is a good starting point).
             Defaults to 3e-4.
-        batch_size (int, optional): Batch size per GPU (16 works well for most setups).
+        train_batch_size (int, optional): Batch size per GPU (16 works well for most setups).
             Defaults to 16.
-        max_length (int, optional): Maximum input sequence length (64=short, 128=medium, 256=long).
+        train_max_length (int, optional): Maximum input sequence length (64=short, 128=medium, 256=long).
             Defaults to 64.
-        max_steps (int, optional): Maximum training steps. If specified, overrides epochs. Defaults to None.
-        logging_steps (int, optional): Steps between logging outputs. Defaults to 10.
-        save_steps (int, optional): Steps between model checkpoints. Defaults to None.
-        save_strategy (str, optional): Checkpoint strategy ("epoch" or "steps"). Defaults to "epoch".
-        optimizer (str, optional): Optimizer ("adamw_torch", "adamw_torch_fused"). Defaults to "adamw_torch".
-        adam_beta1 (float, optional): Adam beta1 parameter. Defaults to 0.9.
-        adam_beta2 (float, optional): Adam beta2 parameter. Defaults to 0.999.
-        adam_epsilon (float, optional): Adam epsilon parameter. Defaults to 1e-8.
-        weight_decay (float, optional): Weight decay for regularization. Defaults to 0.01.
-        use_flash_attention (bool, optional): Enable Flash Attention 2. Defaults to False.
+        train_max_steps (int, optional): Maximum training steps. If specified, overrides epochs. Defaults to None.
+        train_logging_steps (int, optional): Steps between logging outputs. Defaults to 10.
+        train_save_steps (int, optional): Steps between model checkpoints. Defaults to None.
+        train_save_strategy (str, optional): Checkpoint strategy ("epoch" or "steps"). Defaults to "epoch".
+        train_optimizer (str, optional): Optimizer ("adamw_torch", "adamw_torch_fused"). Defaults to "adamw_torch".
+        train_adam_beta1 (float, optional): Adam beta1 parameter. Defaults to 0.9.
+        train_adam_beta2 (float, optional): Adam beta2 parameter. Defaults to 0.999.
+        train_adam_epsilon (float, optional): Adam epsilon parameter. Defaults to 1e-8.
+        train_weight_decay (float, optional): Weight decay for regularization. Defaults to 0.01.
+        train_use_flash_attention (bool, optional): Enable Flash Attention 2. Defaults to False.
         train_num_nodes (int, optional): Number of training nodes (2=basic distributed, 4+=large scale).
             Defaults to 2.
         train_node_cpu_request (str, optional): CPU request per node (e.g., "2", "4"). Defaults to "2".
@@ -741,22 +984,35 @@ def train_model_pipeline(
         train_node_memory_request (str, optional): Memory per node (100Gi=basic, 200Gi+=memory-intensive models).
             Defaults to "100Gi".
         trainer_runtime (str, optional): Runtime to use for Kubeflow Trainer. Defaults to "torch-distributed".
-        storage_class_name (str, optional): Storage class name for PVC creation. Defaults to "standard".
+        storage_class_name (str, optional): Storage class name for PVC creation. Defaults to None.
+        storage_size (str, optional): Storage size for PVC creation. Defaults to "20Gi".
+        eval_batch_size (int, optional): Batch size for model evaluation. Defaults to 2.
+        eval_limit (int, optional): Maximum number of examples to evaluate per task. If None, evaluates all available examples. Defaults to None.
+        eval_max_model_len (int, optional): Maximum sequence length for the model during evaluation. Defaults to 4096.
+        eval_gpu_memory_utilization (float, optional): Fraction of GPU memory to use for model loading during evaluation. Must be between 0.0 and 1.0. Defaults to 0.8.
+        eval_dtype (str, optional): Data type for model weights during evaluation. Options include "bfloat16", "float16", "float32". Defaults to "bfloat16".
+        eval_add_bos_token (bool, optional): Whether to add beginning-of-sequence token to inputs during evaluation. Defaults to True.
+        eval_include_classification_tasks (bool, optional): Whether to include classification tasks (RTE, WNLI) in evaluation. Defaults to True.
+        eval_include_summarization_tasks (bool, optional): Whether to include summarization tasks (XSum) in evaluation. Defaults to True.
+        eval_verbosity (str, optional): Logging verbosity level during evaluation. Options include "DEBUG", "INFO", "WARNING", "ERROR". Defaults to "INFO".
+        eval_max_batch_size (int, optional): Maximum batch size for model inference during evaluation. If None, uses the same value as eval_batch_size. Defaults to None.
+        eval_num_gpus (str, optional): Number of GPUs to request for evaluation. Defaults to "1".
+        eval_cpu_request (str, optional): CPU request for the evaluation pod. Defaults to "4000m".
+        eval_memory_request (str, optional): Memory request for the evaluation pod. Defaults to "100G".
     Returns:
         Pipeline object that can be compiled and executed by Kubeflow Pipelines.
 
     Example:
         >>> pipeline = train_model_pipeline(
         ...     model_name="ibm-granite/granite-3.3-8b-instruct",
-        ...     epochs=5,
-        ...     lora_rank=16
+        ...     train_epochs=5,
+        ...     train_lora_rank=16
         ... )
         >>> kfp.compiler.Compiler().compile(pipeline, "my_pipeline.yaml")
     """
     create_pvc_op = kfp.kubernetes.CreatePVC(
-        pvc_name_suffix="-dataset",
         access_modes=["ReadWriteMany"],
-        size="10G",
+        size=storage_size,
         storage_class_name=storage_class_name,
     )
 
@@ -775,34 +1031,35 @@ def train_model_pipeline(
         train_model(
             pvc_name=create_pvc_op.output,
             model_name=model_name,
-            epochs=epochs,
+            epochs=train_epochs,
             run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
             dataset_path="/workspace/dataset",
             pvc_path="/workspace",
             # Pass through configuration parameters
-            lora_rank=lora_rank,
-            learning_rate=learning_rate,
-            batch_size=batch_size,
-            max_length=max_length,
+            lora_rank=train_lora_rank,
+            learning_rate=train_learning_rate,
+            batch_size=train_batch_size,
+            max_length=train_max_length,
             # Training control parameters
-            max_steps=max_steps,
-            logging_steps=logging_steps,
-            save_steps=save_steps,
-            save_strategy=save_strategy,
+            max_steps=train_max_steps,
+            logging_steps=train_logging_steps,
+            save_steps=train_save_steps,
+            save_strategy=train_save_strategy,
             # Optimizer parameters
-            optimizer=optimizer,
-            adam_beta1=adam_beta1,
-            adam_beta2=adam_beta2,
-            adam_epsilon=adam_epsilon,
-            weight_decay=weight_decay,
+            optimizer=train_optimizer,
+            adam_beta1=train_adam_beta1,
+            adam_beta2=train_adam_beta2,
+            adam_epsilon=train_adam_epsilon,
+            weight_decay=train_weight_decay,
             # Performance optimization
-            use_flash_attention=use_flash_attention,
+            use_flash_attention=train_use_flash_attention,
             # Infrastructure parameters
             num_nodes=train_num_nodes,
             train_node_cpu_request=train_node_cpu_request,
             train_node_gpu_request=train_node_gpu_request,
             train_node_memory_request=train_node_memory_request,
             trainer_runtime=trainer_runtime,
+            save_merged_model_path="/workspace/merged_model",
         )
         .after(prepare_dataset_op)
         .set_caching_options(enable_caching=False)
@@ -814,7 +1071,33 @@ def train_model_pipeline(
         mount_path="/workspace",
     )
 
-    kfp.kubernetes.DeletePVC(pvc_name=create_pvc_op.output).after(train_model_op)
+    eval_model_op = (
+        evaluate_model(
+            model_path="/workspace/merged_model",
+            batch_size=eval_batch_size,
+            limit=eval_limit,
+            max_model_len=eval_max_model_len,
+            gpu_memory_utilization=eval_gpu_memory_utilization,
+            dtype=eval_dtype,
+            add_bos_token=eval_add_bos_token,
+            include_classification_tasks=eval_include_classification_tasks,
+            include_summarization_tasks=eval_include_summarization_tasks,
+            verbosity=eval_verbosity,
+            max_batch_size=eval_max_batch_size,
+        )
+        .set_caching_options(enable_caching=False)
+        .set_accelerator_type("nvidia.com/gpu")
+        .set_accelerator_limit(eval_num_gpus)
+        .set_cpu_request(eval_cpu_request)
+        .set_memory_request(eval_memory_request)
+    ).after(train_model_op)
+    kfp.kubernetes.mount_pvc(
+        task=eval_model_op,
+        pvc_name=create_pvc_op.output,
+        mount_path="/workspace",
+    )
+
+    kfp.kubernetes.DeletePVC(pvc_name=create_pvc_op.output).after(eval_model_op)
 
 
 if __name__ == "__main__":

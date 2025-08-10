@@ -616,7 +616,8 @@ torchrun ephemeral_component.py"""
 
         exported_count = 0
         for metric_name, metric_value in metrics_dict.items():
-            if isinstance(metric_value, (int, float)):
+            # Ignore metrics that are 0 to avoid a bug in the RHOAI UI.
+            if isinstance(metric_value, (int, float)) and metric_value != 0:
                 output_metrics.log_metric(metric_name, metric_value)
                 print(f"Exported metric: {metric_name} = {metric_value}")
                 exported_count += 1

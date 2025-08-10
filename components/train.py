@@ -636,22 +636,6 @@ torchrun ephemeral_component.py"""
             f"Trained model not found at expected location: {model_source}"
         )
 
-    required_files = ["adapter_config.json", "adapter_model.bin"]
-    missing_files = []
-    for file in required_files:
-        file_path = os.path.join(model_source, file)
-        if not os.path.exists(file_path):
-            missing_files.append(file)
-
-    if missing_files:
-        print(f"Warning: Missing expected model files: {missing_files}")
-        print(f"Available files in {model_source}:")
-        try:
-            for file in os.listdir(model_source):
-                print(f"  - {file}")
-        except Exception as e:
-            print(f"  Error listing files: {e}")
-
     output_model.name = f"{model_name}-adapter"
     shutil.copytree(model_source, output_model.path, dirs_exist_ok=True)
     print(f"Model copied successfully from {model_source} to {output_model.path}")

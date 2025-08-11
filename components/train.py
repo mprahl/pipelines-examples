@@ -1,5 +1,6 @@
 from kfp import dsl
 from typing import Optional
+import kfp
 
 @dsl.component(
     base_image="registry.access.redhat.com/ubi9/python-311:latest",
@@ -642,3 +643,9 @@ torchrun ephemeral_component.py"""
     print(f"Model copied successfully from {model_source} to {output_model.path}")
 
     print("=== TrainJob process completed successfully ===")
+
+if __name__ == "__main__":
+    kfp.compiler.Compiler().compile(
+        train_model,
+        package_path=__file__.replace(".py", "_component.yaml"),
+    )

@@ -1,4 +1,6 @@
 from kfp import dsl
+import kfp
+
 
 @dsl.component(
     base_image="registry.access.redhat.com/ubi9/python-311:latest",
@@ -207,3 +209,10 @@ def evaluate_model(
     logger.info("Metrics logged successfully")
 
     logger.info("Pipeline completed successfully")
+
+
+if __name__ == "__main__":
+    kfp.compiler.Compiler().compile(
+        evaluate_model,
+        package_path=__file__.replace(".py", "_component.yaml"),
+    )

@@ -10,6 +10,8 @@ import kfp
         "accelerate",
         "lm-eval[vllm]",
         "unitxt",
+        "sacrebleu",
+        "datasets",
     ],
 )
 def evaluate_model(
@@ -24,6 +26,7 @@ def evaluate_model(
     add_bos_token: bool = True,
     include_classification_tasks: bool = True,
     include_summarization_tasks: bool = True,
+    custom_translation_dataset: str = None,
     verbosity: str = "INFO",
     max_batch_size: int = None,
 ):
@@ -31,15 +34,97 @@ def evaluate_model(
     import os
     import json
     import time
-    import shutil
-    from typing import List, Dict, Any
+    import random
+    from typing import Dict, Any, Optional
 
     from lm_eval.tasks.unitxt import task
     from lm_eval.api.registry import get_model
     from lm_eval.api.model import LM
     from lm_eval.evaluator import evaluate
     from lm_eval.tasks import get_task_dict
+    from lm_eval.api.instance import Instance
+    from lm_eval import tasks
+    from lm_eval.api.task import TaskConfig
+    from lm_eval.api.metrics import mean
+    from datasets import load_from_disk
     import torch
+    import sacrebleu
+
+    class TranslationTask(tasks.Task):
+        """
+        A custom lm-eval task for translation, using the greedy_until method
+        and evaluating with the BLEU metric.
+        """
+
+        VERSION = 0
+
+        def __init__(self, dataset_path, task_name: str):
+            self.dataset_path = dataset_path
+            self.task_name = task_name
+            config = TaskConfig(task=task_name, dataset_path=dataset_path)
+            super().__init__(config=config)
+            self.config.task = task_name
+            self.fewshot_rnd = random.Random()
+
+        def download(
+            self, data_dir=None, cache_dir=None, download_mode=None, **kwargs
+        ) -> None:
+            self.dataset = {"test": load_from_disk(self.dataset_path)}
+
+        def has_test_docs(self):
+            return "test" in self.dataset
+
+        def has_validation_docs(self):
+            return False
+
+        def has_training_docs(self):
+            return False
+
+        def test_docs(self):
+            return self.dataset["test"]
+
+        def doc_to_text(self, doc):
+            return doc["prompt"]
+
+        def doc_to_target(self, doc):
+            return doc["completion"]
+
+        def construct_requests(self, doc, ctx, **kwargs):
+            kwargs.pop("apply_chat_template", False)
+            kwargs.pop("chat_template", False)
+            return Instance(
+                request_type="generate_until",
+                doc=doc,
+                arguments=(ctx, {}),
+                idx=0,
+                **kwargs,
+            )
+
+        def process_results(self, doc, results):
+            (generated_text,) = results
+
+            prediction = generated_text.strip()
+
+            predictions = [prediction]
+            references = [[self.doc_to_target(doc).strip()]]
+
+            bleu_score = sacrebleu.corpus_bleu(predictions, references).score
+
+            exact_match = 1.0 if prediction == references[0][0] else 0.0
+
+            return {"bleu": bleu_score, "exact_match": exact_match}
+
+        def aggregation(self):
+            return {"bleu": mean, "exact_match": mean}
+
+        def should_decontaminate(self):
+            return False
+
+        def doc_to_prefix(self, doc):
+            return ""
+
+        def higher_is_better(self):
+            return {"bleu": True, "exact_match": True}
 
     TASK_CONFIGS = {
         "classification": [
@@ -98,9 +183,13 @@ def evaluate_model(
     if limit is not None and limit <= 0:
         raise ValueError("limit must be positive or None")
 
-    if not include_classification_tasks and not include_summarization_tasks:
+    if (
+        not include_classification_tasks
+        and not include_summarization_tasks
+        and not custom_translation_dataset
+    ):
         raise ValueError(
-            "At least one of include_classification_tasks or include_summarization_tasks must be True"
+            "At least one of include_classification_tasks, include_summarization_tasks, or custom_translation_dataset must be provided"
         )
 
     logger.info("Parameter validation passed")
@@ -109,6 +198,13 @@ def evaluate_model(
     start_time = time.time()
 
     eval_tasks = []
+
+    if custom_translation_dataset:
+        logger.info("Adding custom translation task...")
+        translation_task = TranslationTask(
+            custom_translation_dataset, "custom_translation"
+        )
+        eval_tasks.append(translation_task)
 
     if include_classification_tasks:
         logger.info("Adding classification tasks...")

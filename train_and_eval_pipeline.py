@@ -10,19 +10,26 @@ from components import evaluate_model, train_model
     base_image="registry.access.redhat.com/ubi9/python-311:latest",
     packages_to_install=["datasets"],
 )
-def prepare_dataset(output_path: str):
-    """Prepare the training dataset by downloading and preprocessing.
+def prepare_dataset(
+    train_output_path: str, eval_output_path: str, train_split_ratio: float = 0.8
+):
+    """Prepare the training and evaluation datasets by downloading and preprocessing.
 
     Downloads the yoda_sentences dataset from HuggingFace, renames columns to match
-    the expected format for training (prompt/completion), and saves it to disk.
+    the expected format for training (prompt/completion), splits into train/eval sets,
+    and saves them to disk.
 
     Args:
-        output_path (str): Directory path where the processed dataset will be saved.
+        train_output_path (str): Directory path where the processed datasets will be saved.
+        eval_output_path (str): Directory path where the processed datasets will be saved.
+        train_split_ratio (float): Ratio of data to use for training (0.0-1.0).
+                                  Defaults to 0.8 (80% train, 20% eval).
     """
     import os
     from datasets import load_dataset
 
-    os.makedirs(output_path, exist_ok=True)
+    os.makedirs(train_output_path, exist_ok=True)
+    os.makedirs(eval_output_path, exist_ok=True)
 
     print("Downloading and loading the dataset from dvgodoy/yoda_sentences")
     dataset = load_dataset("dvgodoy/yoda_sentences", split="train")
@@ -31,8 +38,35 @@ def prepare_dataset(output_path: str):
     dataset = dataset.rename_column("translation_extra", "completion")
     dataset = dataset.remove_columns(["translation"])
 
-    print("Saving dataset to", output_path)
-    dataset.save_to_disk(output_path)
+    # Add prefix to prompts
+    print("Adding Yoda speak prefix to prompts")
+
+    def add_yoda_prefix(example):
+        example["prompt"] = (
+            "Translate the following to Yoda speak: " + example["prompt"]
+        )
+        return example
+
+    dataset = dataset.map(add_yoda_prefix)
+
+    # Split the dataset into train and eval sets
+    print(
+        f"Splitting dataset with {len(dataset)} rows into train ({train_split_ratio:.1%}) and eval ({(1-train_split_ratio):.1%}) sets"
+    )
+    split_dataset = dataset.train_test_split(test_size=1 - train_split_ratio, seed=42)
+
+    train_dataset = split_dataset["train"]
+    eval_dataset = split_dataset["test"]
+
+    print(f"Train set: {len(train_dataset)} rows")
+    print(f"Eval set: {len(eval_dataset)} rows")
+
+    # Save both datasets
+    print(f"Saving train dataset to {train_output_path}")
+    train_dataset.save_to_disk(train_output_path)
+
+    print(f"Saving eval dataset to {eval_output_path}")
+    eval_dataset.save_to_disk(eval_output_path)
 
 
 @dsl.pipeline(
@@ -46,6 +80,7 @@ def train_model_pipeline(
     train_learning_rate: float = 3e-4,
     train_batch_size: int = 16,
     train_max_length: int = 64,
+    train_split_ratio: float = 0.8,
     # Training control parameters
     train_max_steps: Optional[int] = None,
     train_logging_steps: int = 10,
@@ -102,6 +137,8 @@ def train_model_pipeline(
             Defaults to 16.
         train_max_length (int, optional): Maximum input sequence length (64=short, 128=medium, 256=long).
             Defaults to 64.
+        train_split_ratio (float, optional): Ratio of dataset to use for training (0.0-1.0).
+            Defaults to 0.8 (80% train, 20% eval).
         train_max_steps (int, optional): Maximum training steps. If specified, overrides epochs. Defaults to None.
         train_logging_steps (int, optional): Steps between logging outputs. Defaults to 10.
         train_save_steps (int, optional): Steps between model checkpoints. Defaults to None.
@@ -152,7 +189,11 @@ def train_model_pipeline(
     )
 
     prepare_dataset_op = (
-        prepare_dataset(output_path="/workspace/dataset")
+        prepare_dataset(
+            train_output_path="/workspace/dataset/train",
+            eval_output_path="/workspace/dataset/eval",
+            train_split_ratio=train_split_ratio,
+        )
         .set_caching_options(enable_caching=False)
         .set_retry(3)
     )
@@ -168,7 +209,7 @@ def train_model_pipeline(
             model_name=model_name,
             epochs=train_epochs,
             run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
-            dataset_path="/workspace/dataset",
+            dataset_path="/workspace/dataset/train",
             pvc_path="/workspace",
             # Pass through configuration parameters
             lora_rank=train_lora_rank,
@@ -219,6 +260,7 @@ def train_model_pipeline(
             include_summarization_tasks=eval_include_summarization_tasks,
             verbosity=eval_verbosity,
             max_batch_size=eval_max_batch_size,
+            custom_translation_dataset="/workspace/dataset/eval",
         )
         .set_caching_options(enable_caching=False)
         .set_accelerator_type("nvidia.com/gpu")

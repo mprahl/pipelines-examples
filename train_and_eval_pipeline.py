@@ -11,25 +11,23 @@ from components import evaluate_model, train_model
     packages_to_install=["datasets"],
 )
 def prepare_dataset(
-    train_output_path: str, eval_output_path: str, train_split_ratio: float = 0.8
+    yoda_train_dataset: dsl.Output[dsl.Dataset],
+    yoda_eval_dataset: dsl.Output[dsl.Dataset],
+    train_split_ratio: float = 0.8,
 ):
     """Prepare the training and evaluation datasets by downloading and preprocessing.
 
     Downloads the yoda_sentences dataset from HuggingFace, renames columns to match
     the expected format for training (prompt/completion), splits into train/eval sets,
-    and saves them to disk.
+    and saves them as output artifacts.
 
     Args:
-        train_output_path (str): Directory path where the processed datasets will be saved.
-        eval_output_path (str): Directory path where the processed datasets will be saved.
+        train_dataset (dsl.Output[dsl.Dataset]): Output dataset for training.
+        eval_dataset (dsl.Output[dsl.Dataset]): Output dataset for evaluation.
         train_split_ratio (float): Ratio of data to use for training (0.0-1.0).
                                   Defaults to 0.8 (80% train, 20% eval).
     """
-    import os
     from datasets import load_dataset
-
-    os.makedirs(train_output_path, exist_ok=True)
-    os.makedirs(eval_output_path, exist_ok=True)
 
     print("Downloading and loading the dataset from dvgodoy/yoda_sentences")
     dataset = load_dataset("dvgodoy/yoda_sentences", split="train")
@@ -62,11 +60,11 @@ def prepare_dataset(
     print(f"Eval set: {len(eval_dataset)} rows")
 
     # Save both datasets
-    print(f"Saving train dataset to {train_output_path}")
-    train_dataset.save_to_disk(train_output_path)
+    print(f"Saving train dataset to {yoda_train_dataset.path}")
+    train_dataset.save_to_disk(yoda_train_dataset.path)
 
-    print(f"Saving eval dataset to {eval_output_path}")
-    eval_dataset.save_to_disk(eval_output_path)
+    print(f"Saving eval dataset to {yoda_eval_dataset.path}")
+    eval_dataset.save_to_disk(yoda_eval_dataset.path)
 
 
 @dsl.pipeline(
@@ -182,25 +180,18 @@ def train_model_pipeline(
         ... )
         >>> kfp.compiler.Compiler().compile(pipeline, "my_pipeline.yaml")
     """
-    create_pvc_op = kfp.kubernetes.CreatePVC(
-        access_modes=["ReadWriteMany"],
-        size=storage_size,
-        storage_class_name=storage_class_name,
-    )
-
     prepare_dataset_op = (
         prepare_dataset(
-            train_output_path="/workspace/dataset/train",
-            eval_output_path="/workspace/dataset/eval",
             train_split_ratio=train_split_ratio,
         )
         .set_caching_options(enable_caching=False)
         .set_retry(3)
     )
-    kfp.kubernetes.mount_pvc(
-        task=prepare_dataset_op,
-        pvc_name=create_pvc_op.output,
-        mount_path="/workspace",
+
+    create_pvc_op = kfp.kubernetes.CreatePVC(
+        access_modes=["ReadWriteMany"],
+        size=storage_size,
+        storage_class_name=storage_class_name,
     )
 
     train_model_op = (
@@ -209,7 +200,7 @@ def train_model_pipeline(
             model_name=model_name,
             epochs=train_epochs,
             run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
-            dataset_path="/workspace/dataset/train",
+            input_dataset=prepare_dataset_op.outputs["yoda_train_dataset"],
             pvc_path="/workspace",
             # Pass through configuration parameters
             lora_rank=train_lora_rank,
@@ -260,7 +251,7 @@ def train_model_pipeline(
             include_summarization_tasks=eval_include_summarization_tasks,
             verbosity=eval_verbosity,
             max_batch_size=eval_max_batch_size,
-            custom_translation_dataset="/workspace/dataset/eval",
+            custom_translation_dataset=prepare_dataset_op.outputs["yoda_eval_dataset"],
         )
         .set_caching_options(enable_caching=False)
         .set_accelerator_type("nvidia.com/gpu")

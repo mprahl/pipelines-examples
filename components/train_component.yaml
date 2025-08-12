@@ -10,8 +10,8 @@
 #    adam_beta2: float [Default: 0.999]
 #    adam_epsilon: float [Default: 1e-08]
 #    batch_size: int [Default: 16.0]
-#    dataset_path: str
 #    epochs: int [Default: 10.0]
+#    input_dataset: system.Dataset
 #    learning_rate: float [Default: 0.0003]
 #    logging_steps: int [Default: 10.0]
 #    lora_rank: int [Default: 8.0]
@@ -39,6 +39,11 @@ components:
   comp-train-model:
     executorLabel: exec-train-model
     inputDefinitions:
+      artifacts:
+        input_dataset:
+          artifactType:
+            schemaTitle: system.Dataset
+            schemaVersion: 0.0.1
       parameters:
         adam_beta1:
           defaultValue: 0.9
@@ -60,9 +65,6 @@ components:
           description: Per-device training batch size. Defaults to 16.
           isOptional: true
           parameterType: NUMBER_INTEGER
-        dataset_path:
-          description: Path to the training dataset within the PVC.
-          parameterType: STRING
         epochs:
           defaultValue: 10.0
           description: Number of training epochs. Defaults to 10.
@@ -204,19 +206,19 @@ deploymentSpec:
 
           '
         - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
-          \ *\n\ndef train_model(\n    model_name: str,\n    pvc_name: str,\n    run_id:\
-          \ str,\n    dataset_path: str,\n    pvc_path: str,\n    output_model: dsl.Output[dsl.Model],\n\
-          \    output_metrics: dsl.Output[dsl.Metrics],\n    # Training configuration\
-          \ parameters\n    epochs: int = 10,\n    lora_rank: int = 8,\n    learning_rate:\
-          \ float = 3e-4,\n    batch_size: int = 16,\n    max_length: int = 64,\n\
-          \    # Training control parameters\n    max_steps: Optional[int] = None,\n\
-          \    logging_steps: int = 10,\n    save_steps: Optional[int] = None,\n \
-          \   save_strategy: str = \"epoch\",\n    # Optimizer parameters\n    optimizer:\
-          \ str = \"adamw_torch\",\n    adam_beta1: float = 0.9,\n    adam_beta2:\
-          \ float = 0.999,\n    adam_epsilon: float = 1e-8,\n    weight_decay: float\
-          \ = 0.01,\n    # Performance optimization\n    use_flash_attention: bool\
-          \ = False,\n    # Infrastructure parameters\n    num_nodes: int = 2,\n \
-          \   train_node_cpu_request: str = \"2\",\n    train_node_gpu_request: str\
+          \ *\n\ndef train_model(\n    input_dataset: dsl.Input[dsl.Dataset],\n  \
+          \  model_name: str,\n    pvc_name: str,\n    run_id: str,\n    pvc_path:\
+          \ str,\n    output_model: dsl.Output[dsl.Model],\n    output_metrics: dsl.Output[dsl.Metrics],\n\
+          \    # Training configuration parameters\n    epochs: int = 10,\n    lora_rank:\
+          \ int = 8,\n    learning_rate: float = 3e-4,\n    batch_size: int = 16,\n\
+          \    max_length: int = 64,\n    # Training control parameters\n    max_steps:\
+          \ Optional[int] = None,\n    logging_steps: int = 10,\n    save_steps: Optional[int]\
+          \ = None,\n    save_strategy: str = \"epoch\",\n    # Optimizer parameters\n\
+          \    optimizer: str = \"adamw_torch\",\n    adam_beta1: float = 0.9,\n \
+          \   adam_beta2: float = 0.999,\n    adam_epsilon: float = 1e-8,\n    weight_decay:\
+          \ float = 0.01,\n    # Performance optimization\n    use_flash_attention:\
+          \ bool = False,\n    # Infrastructure parameters\n    num_nodes: int = 2,\n\
+          \    train_node_cpu_request: str = \"2\",\n    train_node_gpu_request: str\
           \ = \"1\",\n    train_node_memory_request: str = \"100Gi\",\n    trainer_runtime:\
           \ str = \"torch-distributed\",\n    save_merged_model_path: str = None,\n\
           ):\n    \"\"\"Train a large language model using distributed training with\
@@ -409,10 +411,15 @@ deploymentSpec:
           \            json.dump(metrics_dict, f, indent=2)\n\n        print(\n  \
           \          f\"Exported {len(metrics_dict)} metrics to {os.path.join(pvc_path,\
           \ 'metrics.json')}\"\n        )\n        print(\"Model and metrics exported\
-          \ successfully!\")\n\n    print(\"=== Starting TrainJob creation process\
-          \ ===\")\n\n    target_modules = get_target_modules(model_name)\n    print(f\"\
-          Selected LoRA target modules for {model_name}: {target_modules}\")\n\n \
-          \   with open(\n        \"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
+          \ successfully!\")\n\n    print(\"Copying dataset to PVC...\")\n    dataset_path\
+          \ = os.path.join(pvc_path, \"dataset\", \"train\")\n    os.makedirs(dataset_path,\
+          \ exist_ok=True)\n    shutil.copytree(\n        input_dataset.path,\n  \
+          \      dataset_path,\n        dirs_exist_ok=True,\n    )\n    print(\n \
+          \       f\"Dataset copied successfully from {input_dataset.path} to {dataset_path}\"\
+          \n    )\n\n    print(\"=== Starting TrainJob creation process ===\")\n\n\
+          \    target_modules = get_target_modules(model_name)\n    print(f\"Selected\
+          \ LoRA target modules for {model_name}: {target_modules}\")\n\n    with\
+          \ open(\n        \"/var/run/secrets/kubernetes.io/serviceaccount/namespace\"\
           , \"r\"\n    ) as ns_file:\n        namespace = ns_file.readline()\n\n \
           \   print(\"Generating command...\")\n\n    func_code = inspect.getsource(train_model_func)\n\
           \    func_code = textwrap.dedent(func_code)\n\n    func_call_code = f\"\"\
@@ -581,6 +588,9 @@ root:
         componentRef:
           name: comp-train-model
         inputs:
+          artifacts:
+            input_dataset:
+              componentInputArtifact: input_dataset
           parameters:
             adam_beta1:
               componentInputParameter: adam_beta1
@@ -590,8 +600,6 @@ root:
               componentInputParameter: adam_epsilon
             batch_size:
               componentInputParameter: batch_size
-            dataset_path:
-              componentInputParameter: dataset_path
             epochs:
               componentInputParameter: epochs
             learning_rate:
@@ -637,6 +645,11 @@ root:
         taskInfo:
           name: train-model
   inputDefinitions:
+    artifacts:
+      input_dataset:
+        artifactType:
+          schemaTitle: system.Dataset
+          schemaVersion: 0.0.1
     parameters:
       adam_beta1:
         defaultValue: 0.9
@@ -658,9 +671,6 @@ root:
         description: Per-device training batch size. Defaults to 16.
         isOptional: true
         parameterType: NUMBER_INTEGER
-      dataset_path:
-        description: Path to the training dataset within the PVC.
-        parameterType: STRING
       epochs:
         defaultValue: 10.0
         description: Number of training epochs. Defaults to 10.

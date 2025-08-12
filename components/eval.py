@@ -26,7 +26,7 @@ def evaluate_model(
     add_bos_token: bool = True,
     include_classification_tasks: bool = True,
     include_summarization_tasks: bool = True,
-    custom_translation_dataset: str = None,
+    custom_translation_dataset: dsl.Input[dsl.Dataset] = None,
     verbosity: str = "INFO",
     max_batch_size: int = None,
 ):
@@ -202,7 +202,8 @@ def evaluate_model(
     if custom_translation_dataset:
         logger.info("Adding custom translation task...")
         translation_task = TranslationTask(
-            custom_translation_dataset, "custom_translation"
+            custom_translation_dataset.path,
+            "custom_translation",
         )
         eval_tasks.append(translation_task)
 

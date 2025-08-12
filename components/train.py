@@ -7,10 +7,10 @@ import kfp
     packages_to_install=["kubernetes"],
 )
 def train_model(
+    input_dataset: dsl.Input[dsl.Dataset],
     model_name: str,
     pvc_name: str,
     run_id: str,
-    dataset_path: str,
     pvc_path: str,
     output_model: dsl.Output[dsl.Model],
     output_metrics: dsl.Output[dsl.Metrics],
@@ -361,6 +361,18 @@ def train_model(
             f"Exported {len(metrics_dict)} metrics to {os.path.join(pvc_path, 'metrics.json')}"
         )
         print("Model and metrics exported successfully!")
+
+    print("Copying dataset to PVC...")
+    dataset_path = os.path.join(pvc_path, "dataset", "train")
+    os.makedirs(dataset_path, exist_ok=True)
+    shutil.copytree(
+        input_dataset.path,
+        dataset_path,
+        dirs_exist_ok=True,
+    )
+    print(
+        f"Dataset copied successfully from {input_dataset.path} to {dataset_path}"
+    )
 
     print("=== Starting TrainJob creation process ===")
 

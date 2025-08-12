@@ -72,7 +72,7 @@ def prepare_dataset(
     description="Provides complete training and evaluation of an LLM model",
 )
 def train_model_pipeline(
-    model_name: str = "ibm-granite/granite-3.3-8b-instruct",
+    model_name: str = "meta-llama/Llama-3.2-3B-Instruct",
     train_epochs: int = 10,
     train_lora_rank: int = 8,
     train_learning_rate: float = 3e-4,
@@ -125,7 +125,7 @@ def train_model_pipeline(
 
     Args:
         model_name (str, optional): HuggingFace model to fine-tune.
-            Defaults to "ibm-granite/granite-3.3-8b-instruct".
+            Defaults to "meta-llama/Llama-3.2-3B-Instruct".
         train_epochs (int, optional): Number of training epochs. Defaults to 10.
         train_lora_rank (int, optional): LoRA adapter complexity (8=efficient, 16=more expressive).
             Defaults to 8.
@@ -174,7 +174,7 @@ def train_model_pipeline(
 
     Example:
         >>> pipeline = train_model_pipeline(
-        ...     model_name="ibm-granite/granite-3.3-8b-instruct",
+        ...     model_name="meta-llama/Llama-3.2-3B-Instruct",
         ...     train_epochs=5,
         ...     train_lora_rank=16
         ... )
@@ -227,6 +227,7 @@ def train_model_pipeline(
             train_node_memory_request=train_node_memory_request,
             trainer_runtime=trainer_runtime,
             save_merged_model_path="/workspace/merged_model",
+            hf_token_secret_name="hf-token",
         )
         .after(prepare_dataset_op)
         .set_caching_options(enable_caching=False)

@@ -239,6 +239,7 @@ def evaluate_model(
             "max_model_len": max_model_len,
             "gpu_memory_utilization": gpu_memory_utilization,
             "pretrained": model_path,
+            "trust_remote_code": True,
         }
 
         model_class = get_model("vllm")

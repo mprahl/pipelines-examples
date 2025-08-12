@@ -10,7 +10,7 @@ from components import evaluate_model
     description="Provides simple evaluation of an LLM model and exports metrics",
 )
 def evaluate_model_pipeline(
-    model_path: str = "ibm-granite/granite-3.3-8b-instruct",
+    model_path: str = "meta-llama/Llama-3.2-3B-Instruct",
     batch_size: int = 2,
     limit: int = None,
     max_model_len: int = 4096,
@@ -32,7 +32,7 @@ def evaluate_model_pipeline(
 
     Args:
         model_path: The name or path of the model to evaluate. Defaults to
-            "ibm-granite/granite-3.3-8b-instruct".
+            "meta-llama/Llama-3.2-3B-Instruct".
         batch_size: The batch size for model inference. Defaults to 2.
         limit: Maximum number of examples to evaluate per task. If None, evaluates
             all available examples. Defaults to None.

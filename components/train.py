@@ -2,6 +2,7 @@ from kfp import dsl
 from typing import Optional
 import kfp
 
+
 @dsl.component(
     base_image="registry.access.redhat.com/ubi9/python-311:latest",
     packages_to_install=["kubernetes"],
@@ -40,6 +41,7 @@ def train_model(
     train_node_memory_request: str = "100Gi",
     trainer_runtime: str = "torch-distributed",
     save_merged_model_path: str = None,
+    hf_token_secret_name: str = None,
 ):
     """Train a large language model using distributed training with LoRA fine-tuning.
 
@@ -49,7 +51,7 @@ def train_model(
     collection.
 
     Args:
-        model_name (str): HuggingFace model identifier (e.g., "ibm-granite/granite-3.3-8b-instruct").
+        model_name (str): HuggingFace model identifier (e.g., "meta-llama/Llama-3.2-3B-Instruct").
         pvc_name (str): Name of the Persistent Volume Claim for data storage that is mounted to this component.
         run_id (str): Unique identifier for this training run. Use dsl.PIPELINE_JOB_ID_PLACEHOLDER.
         dataset_path (str): Path to the training dataset within the PVC.
@@ -77,6 +79,7 @@ def train_model(
         train_node_memory_request (str, optional): Memory request per node (e.g., "100Gi", "200Gi"). Defaults to "100Gi".
         trainer_runtime (str, optional): Runtime to use for Kubeflow Trainer. Defaults to "torch-distributed".
         save_merged_model_path (str, optional): Path to save the merged model (base + LoRA adapter). Useful for saving to the PVC for evaluation. Defaults to None.
+        hf_token_secret_name (str, optional): Name of the Kubernetes secret containing the Hugging Face token. Defaults to None.
     """
     import json
     import os
@@ -204,7 +207,11 @@ def train_model(
         metrics_callback = MetricsCallback(is_main_worker)
 
         print("Downloading and loading model")
-        model_kwargs = {"device_map": "auto", "torch_dtype": torch.float16}
+        model_kwargs = {
+            "device_map": "auto",
+            "torch_dtype": torch.float16,
+            "trust_remote_code": True,
+        }
         if use_flash_attention:
             model_kwargs["attn_implementation"] = "flash_attention_2"
 
@@ -225,7 +232,7 @@ def train_model(
         print("Loading dataset")
         dataset = load_from_disk(dataset_path)
 
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -370,9 +377,7 @@ def train_model(
         dataset_path,
         dirs_exist_ok=True,
     )
-    print(
-        f"Dataset copied successfully from {input_dataset.path} to {dataset_path}"
-    )
+    print(f"Dataset copied successfully from {input_dataset.path} to {dataset_path}")
 
     print("=== Starting TrainJob creation process ===")
 
@@ -451,6 +456,62 @@ torchrun ephemeral_component.py"""
     print("Successfully created Kubernetes API client")
 
     print("Defining TrainJob resource...")
+
+    env_vars = [
+        {"name": "HOME", "value": "/tmp"},
+        {
+            "name": "TRAINING_CONFIG",
+            "value": json.dumps(
+                {
+                    "lora_rank": lora_rank,
+                    "learning_rate": learning_rate,
+                    "batch_size": batch_size,
+                    "max_length": max_length,
+                    "model_name": model_name,
+                    "dataset_path": dataset_path,
+                    "epochs": epochs,
+                    "pvc_path": pvc_path,
+                    "target_modules": target_modules,
+                    "max_steps": max_steps,
+                    "logging_steps": logging_steps,
+                    "save_steps": save_steps,
+                    "save_strategy": save_strategy,
+                    "optimizer": optimizer,
+                    "adam_beta1": adam_beta1,
+                    "adam_beta2": adam_beta2,
+                    "adam_epsilon": adam_epsilon,
+                    "weight_decay": weight_decay,
+                    "use_flash_attention": use_flash_attention,
+                    "save_merged_model_path": save_merged_model_path,
+                }
+            ),
+        },
+    ]
+
+    # Build podSpecOverrides dynamically so HF secret is only added when provided
+    pod_volumes = [
+        {
+            "name": "dataset-pvc",
+            "persistentVolumeClaim": {"claimName": pvc_name},
+        }
+    ]
+
+    if hf_token_secret_name:
+        pod_volumes.append(
+            {
+                "name": "hf-token",
+                "secret": {"secretName": hf_token_secret_name},
+            }
+        )
+        env_vars.append(
+            {
+                "name": "HF_TOKEN",
+                "valueFrom": {
+                    "secretKeyRef": {"name": hf_token_secret_name, "key": "HF_TOKEN"}
+                },
+            }
+        )
+
     train_job = {
         "apiVersion": "trainer.kubeflow.org/v1alpha1",
         "kind": "TrainJob",
@@ -471,47 +532,13 @@ torchrun ephemeral_component.py"""
                         "nvidia.com/gpu": train_node_gpu_request,
                     },
                 },
-                "env": [
-                    {"name": "HOME", "value": "/tmp"},
-                    {
-                        "name": "TRAINING_CONFIG",
-                        "value": json.dumps(
-                            {
-                                "lora_rank": lora_rank,
-                                "learning_rate": learning_rate,
-                                "batch_size": batch_size,
-                                "max_length": max_length,
-                                "model_name": model_name,
-                                "dataset_path": dataset_path,
-                                "epochs": epochs,
-                                "pvc_path": pvc_path,
-                                "target_modules": target_modules,
-                                "max_steps": max_steps,
-                                "logging_steps": logging_steps,
-                                "save_steps": save_steps,
-                                "save_strategy": save_strategy,
-                                "optimizer": optimizer,
-                                "adam_beta1": adam_beta1,
-                                "adam_beta2": adam_beta2,
-                                "adam_epsilon": adam_epsilon,
-                                "weight_decay": weight_decay,
-                                "use_flash_attention": use_flash_attention,
-                                "save_merged_model_path": save_merged_model_path,
-                            }
-                        ),
-                    },
-                ],
+                "env": env_vars,
                 "command": command,
             },
             "podSpecOverrides": [
                 {
                     "targetJobs": [{"name": "node"}],
-                    "volumes": [
-                        {
-                            "name": "dataset-pvc",
-                            "persistentVolumeClaim": {"claimName": pvc_name},
-                        }
-                    ],
+                    "volumes": pod_volumes,
                     "containers": [
                         {
                             "name": "node",
@@ -655,6 +682,7 @@ torchrun ephemeral_component.py"""
     print(f"Model copied successfully from {model_source} to {output_model.path}")
 
     print("=== TrainJob process completed successfully ===")
+
 
 if __name__ == "__main__":
     kfp.compiler.Compiler().compile(

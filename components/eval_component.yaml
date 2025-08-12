@@ -206,10 +206,11 @@ deploymentSpec:
           \n    try:\n        model_args = {\n            \"add_bos_token\": add_bos_token,\n\
           \            \"dtype\": dtype,\n            \"max_model_len\": max_model_len,\n\
           \            \"gpu_memory_utilization\": gpu_memory_utilization,\n     \
-          \       \"pretrained\": model_path,\n        }\n\n        model_class =\
-          \ get_model(\"vllm\")\n        additional_config = {\n            \"batch_size\"\
-          : batch_size,\n            \"max_batch_size\": max_batch_size,\n       \
-          \     \"device\": None,\n        }\n\n        loaded_model = model_class.create_from_arg_obj(model_args,\
+          \       \"pretrained\": model_path,\n            \"trust_remote_code\":\
+          \ True,\n        }\n\n        model_class = get_model(\"vllm\")\n      \
+          \  additional_config = {\n            \"batch_size\": batch_size,\n    \
+          \        \"max_batch_size\": max_batch_size,\n            \"device\": None,\n\
+          \        }\n\n        loaded_model = model_class.create_from_arg_obj(model_args,\
           \ additional_config)\n        logger.info(f\"Model loaded successfully in\
           \ {time.time() - start_time:.2f}s\")\n    except Exception as e:\n     \
           \   logger.error(f\"Failed to load model: {e}\")\n        raise RuntimeError(f\"\

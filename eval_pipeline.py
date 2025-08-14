@@ -2,7 +2,7 @@ import kfp
 from kfp import dsl
 import kfp.kubernetes
 
-from components import evaluate_model
+from components import evaluate_model, prepare_yoda_dataset
 
 
 @dsl.pipeline(
@@ -24,6 +24,7 @@ def evaluate_model_pipeline(
     accelerator_limit: str = "1",
     cpu_request: str = "4000m",
     memory_request: str = "100G",
+    train_split_ratio: float = 0.8,
 ):
     """Evaluates an LLM model using various tasks and exports metrics.
 
@@ -54,25 +55,37 @@ def evaluate_model_pipeline(
         accelerator_limit: Number of GPUs to request. Defaults to "1".
         cpu_request: CPU request for the pod. Defaults to "4000m".
         memory_request: Memory request for the pod. Defaults to "100G".
+        train_split_ratio: The ratio of the dataset to use for training. Defaults to 0.8.
     """
-    evaluate_model(
-        model_path=model_path,
-        batch_size=batch_size,
-        limit=limit,
-        max_model_len=max_model_len,
-        gpu_memory_utilization=gpu_memory_utilization,
-        dtype=dtype,
-        add_bos_token=add_bos_token,
-        include_classification_tasks=include_classification_tasks,
-        include_summarization_tasks=include_summarization_tasks,
-        verbosity=verbosity,
-        max_batch_size=max_batch_size,
-    ).set_accelerator_type("nvidia.com/gpu").set_accelerator_limit(
-        accelerator_limit
-    ).set_cpu_request(
-        cpu_request
-    ).set_memory_request(
-        memory_request
+
+    yoda_dataset_task = prepare_yoda_dataset(train_split_ratio=train_split_ratio)
+
+    evaluate_model_task = (
+        evaluate_model(
+            model_path=model_path,
+            batch_size=batch_size,
+            limit=limit,
+            max_model_len=max_model_len,
+            gpu_memory_utilization=gpu_memory_utilization,
+            dtype=dtype,
+            add_bos_token=add_bos_token,
+            include_classification_tasks=include_classification_tasks,
+            include_summarization_tasks=include_summarization_tasks,
+            verbosity=verbosity,
+            max_batch_size=max_batch_size,
+            custom_translation_dataset=yoda_dataset_task.outputs["yoda_eval_dataset"],
+        )
+        .set_accelerator_type("nvidia.com/gpu")
+        .set_accelerator_limit(accelerator_limit)
+        .set_cpu_request(cpu_request)
+        .set_memory_request(memory_request)
+    )
+
+    # Remove this if the model is not gated
+    kfp.kubernetes.use_secret_as_env(
+        secret_name="hf-token",
+        task=evaluate_model_task,
+        secret_key_to_env={"HF_TOKEN": "HF_TOKEN"},
     )
 
 

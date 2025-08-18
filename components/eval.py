@@ -18,6 +18,7 @@ def evaluate_model(
     model_path: str,
     output_metrics: dsl.Output[dsl.Metrics],
     output_results: dsl.Output[dsl.Artifact],
+    output_prompts: dsl.Output[dsl.Artifact],
     batch_size: int = 1,
     limit: int = None,
     max_model_len: int = 4096,
@@ -27,6 +28,7 @@ def evaluate_model(
     include_classification_tasks: bool = True,
     include_summarization_tasks: bool = True,
     custom_translation_dataset: dsl.Input[dsl.Dataset] = None,
+    log_prompts: bool = True,
     verbosity: str = "INFO",
     max_batch_size: int = None,
 ):
@@ -58,9 +60,11 @@ def evaluate_model(
 
         VERSION = 0
 
-        def __init__(self, dataset_path, task_name: str):
+        def __init__(self, dataset_path, task_name: str, log_prompts=False, prompts_log=None):
             self.dataset_path = dataset_path
             self.task_name = task_name
+            self.log_prompts = log_prompts
+            self.prompts_log = [] if prompts_log is None else prompts_log
             config = TaskConfig(task=task_name, dataset_path=dataset_path)
             super().__init__(config=config)
             self.config.task = task_name
@@ -104,6 +108,15 @@ def evaluate_model(
             (generated_text,) = results
 
             prediction = generated_text.strip()
+
+            if self.log_prompts:
+                try:
+                    self.prompts_log.append(
+                        {"prompt": self.doc_to_text(doc), "response": prediction}
+                    )
+                except Exception:
+                    # Best-effort logging; avoid breaking evaluation if logging fails
+                    pass
 
             predictions = [prediction]
             references = [[self.doc_to_target(doc).strip()]]
@@ -198,12 +211,15 @@ def evaluate_model(
     start_time = time.time()
 
     eval_tasks = []
+    prompt_response_log = []
 
     if custom_translation_dataset:
         logger.info("Adding custom translation task...")
         translation_task = TranslationTask(
             custom_translation_dataset.path,
             "custom_translation",
+            log_prompts=log_prompts,
+            prompts_log=prompt_response_log,
         )
         eval_tasks.append(translation_task)
 
@@ -288,6 +304,16 @@ def evaluate_model(
     with open(output_results.path, "w") as f:
         json.dump(clean_results, f, indent=2)
     logger.info(f"Results saved to {output_results.path}")
+
+    # Save prompt/response log for custom TranslationTask only
+    if log_prompts and custom_translation_dataset and len(prompt_response_log) > 0:
+        try:
+            output_prompts.name = "prompts.json"
+            with open(output_prompts.path, "w") as f:
+                json.dump(prompt_response_log, f, indent=2)
+            logger.info(f"Prompt/response log saved to {output_prompts.path}")
+        except Exception as e:
+            logger.warning(f"Failed to save prompt/response log: {e}")
 
     logger.info("Logging metrics...")
 

@@ -5,9 +5,12 @@ evaluating and finetuning LLMs.
 
 ## Table of contents
 
-- [prepare_yoda_dataset](#prepare_yoda_dataset): Prepare train/eval splits from the Yoda sentences dataset
-- [train_model](#train_model): Distributed LoRA fine-tuning via Kubeflow Trainer v2, exports adapter + metrics
-- [evaluate_model](#evaluate_model): Evaluate models with lm-eval-harness (vLLM) on configurable tasks
+- [prepare_yoda_dataset](#prepare_yoda_dataset): Prepare train/eval splits from
+  the Yoda sentences dataset
+- [train_model](#train_model): Distributed LoRA fine-tuning via Kubeflow Trainer
+  v2, exports adapter + metrics
+- [evaluate_model](#evaluate_model): Evaluate models with lm-eval-harness (vLLM)
+  on configurable tasks
 
 ## prepare_yoda_dataset
 
@@ -123,7 +126,9 @@ train = train_model(
 ## evaluate_model
 
 **Purpose**: Evaluate a model with lm-eval-harness (vLLM backend) on
-configurable tasks; optionally include a custom translation dataset.
+configurable tasks; optionally include a custom translation dataset. When a
+custom translation dataset is provided, you can also log the prompts and
+responses generated during evaluation.
 
 **Inputs (artifacts)**
 
@@ -144,12 +149,17 @@ configurable tasks; optionally include a custom translation dataset.
   - **add_bos_token (bool, default: True)**
   - **include_classification_tasks (bool, default: True)**
   - **include_summarization_tasks (bool, default: True)**
+  - **log_prompts (bool, default: True)**: When using a custom translation
+    dataset, logs an array of prompt/response pairs to an output artifact.
   - **verbosity (str, default: "INFO")**
   - **max_batch_size (int, optional, default: None)**
 
 **Outputs (artifacts)**
 
 - **output_results (system.Artifact)**: JSON file with evaluation results.
+- **output_prompts (system.Artifact)**: JSON file containing an array of objects
+  in the form `{ "prompt": "...", "response": "..." }`. This is produced only
+  when a `custom_translation_dataset` is provided and `log_prompts=True`.
 - **output_metrics (system.Metrics)**
 
 **Load**

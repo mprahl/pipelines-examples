@@ -3,6 +3,12 @@
 This directory contains Kubeflow Pipelines (KFP) components that can be used for
 evaluating and finetuning LLMs.
 
+## Table of contents
+
+- [prepare_yoda_dataset](#prepare_yoda_dataset): Prepare train/eval splits from the Yoda sentences dataset
+- [train_model](#train_model): Distributed LoRA fine-tuning via Kubeflow Trainer v2, exports adapter + metrics
+- [evaluate_model](#evaluate_model): Evaluate models with lm-eval-harness (vLLM) on configurable tasks
+
 ## prepare_yoda_dataset
 
 **Purpose**: Download and preprocess the

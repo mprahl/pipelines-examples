@@ -52,6 +52,7 @@ model artifact. Optionally merge and save a full model.
 
 **Prerequisites**:
 
+1. Kubeflow Trainer v2 is installed on the cluster.
 1. Ensure the pipeline-runner service account has access to create and read
    `TrainJob` objects in the `trainer.kubeflow.org` API group so that it can
    leverage Kubeflow Trainer v2.
@@ -123,6 +124,38 @@ train = train_model(
 )
 ```
 
+**Minimal usage for pipeline with evaluation**
+
+```python
+from kfp import dsl
+import kfp.kubernetes
+
+create_pvc_op = kfp.kubernetes.CreatePVC(
+    access_modes=["ReadWriteMany"],
+    size="20Gi",
+)
+
+train_model_op = train_model(
+    input_dataset=prep.outputs["yoda_train_dataset"],
+    model_name="meta-llama/Llama-3.2-3B-Instruct",
+    pvc_name=create_pvc_op.output,
+    pvc_path="/workspace",
+    save_merged_model_path="/workspace/merged_model",
+    run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
+    hf_token_secret_name="hf-token",
+    num_nodes=2,
+    train_node_cpu_request="2",
+    train_node_gpu_request="1",
+    train_node_memory_request="80Gi",
+)
+
+kfp.kubernetes.mount_pvc(
+    task=train_model_op,
+    pvc_name=create_pvc_op.output,
+    mount_path="/workspace",
+)
+```
+
 ## evaluate_model
 
 **Purpose**: Evaluate a model with lm-eval-harness (vLLM backend) on
@@ -178,5 +211,29 @@ evaluate_model = kfp_components.load_component_from_url(
 eval_step = evaluate_model(
     model_path="meta-llama/Llama-3.2-3B-Instruct",
     # custom_translation_dataset=prep.outputs["yoda_eval_dataset"],  # optional
+)
+```
+
+**Minimal usage for pipeline with training and custom dataset**
+
+```python
+import kfp.kubernetes
+
+eval_model_op = (
+    evaluate_model(
+        model_path="/workspace/merged_model",
+        custom_translation_dataset=prepare_dataset_op.outputs["yoda_eval_dataset"],
+    )
+    .set_caching_options(enable_caching=False)
+    .set_accelerator_type("nvidia.com/gpu")
+    .set_accelerator_limit("1")
+    .set_cpu_request("4000m")
+    .set_memory_request("80G")
+).after(train_model_op)
+
+kfp.kubernetes.mount_pvc(
+    task=eval_model_op,
+    pvc_name=create_pvc_op.output,
+    mount_path="/workspace",
 )
 ```

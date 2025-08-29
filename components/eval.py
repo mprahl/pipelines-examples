@@ -19,6 +19,7 @@ def evaluate_model(
     output_metrics: dsl.Output[dsl.Metrics],
     output_results: dsl.Output[dsl.Artifact],
     output_prompts: dsl.Output[dsl.Artifact],
+    lora_adapter: dsl.Input[dsl.Model] = None,
     batch_size: int = 1,
     limit: int = None,
     max_model_len: int = 4096,
@@ -257,6 +258,12 @@ def evaluate_model(
             "pretrained": model_path,
             "trust_remote_code": True,
         }
+
+        # Optionally provide LoRA adapter to lm-eval's VLLM backend
+        # The backend expects `lora_local_path` and internally constructs the LoRARequest.
+        if lora_adapter and lora_adapter.path:
+            logger.info("LoRA adapter provided; passing lora_local_path to VLLM backend")
+            model_args["lora_local_path"] = lora_adapter.path
 
         model_class = get_model("vllm")
         additional_config = {

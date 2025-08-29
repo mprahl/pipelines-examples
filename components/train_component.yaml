@@ -24,7 +24,6 @@
 #    pvc_name: str
 #    pvc_path: str
 #    run_id: str
-#    save_merged_model_path: str
 #    save_steps: int
 #    save_strategy: str [Default: 'epoch']
 #    train_node_cpu_request: str [Default: '2']
@@ -126,11 +125,6 @@ components:
         run_id:
           description: Unique identifier for this training run. Use dsl.PIPELINE_JOB_ID_PLACEHOLDER.
           parameterType: STRING
-        save_merged_model_path:
-          description: Path to save the merged model (base + LoRA adapter). Useful
-            for saving to the PVC for evaluation. Defaults to None.
-          isOptional: true
-          parameterType: STRING
         save_steps:
           description: Number of steps between model checkpoints. Defaults to None.
           isOptional: true
@@ -226,17 +220,16 @@ deploymentSpec:
           \ bool = False,\n    # Infrastructure parameters\n    num_nodes: int = 2,\n\
           \    train_node_cpu_request: str = \"2\",\n    train_node_gpu_request: str\
           \ = \"1\",\n    train_node_memory_request: str = \"100Gi\",\n    trainer_runtime:\
-          \ str = \"torch-distributed\",\n    save_merged_model_path: str = None,\n\
-          \    hf_token_secret_name: str = None,\n):\n    \"\"\"Train a large language\
-          \ model using distributed training with LoRA fine-tuning.\n\n    This function\
-          \ creates and manages a Kubernetes TrainJob for distributed training\n \
-          \   of a large language model using LoRA (Low-Rank Adaptation) fine-tuning.\
-          \ It handles\n    the complete training workflow including job creation,\
-          \ monitoring, and artifact\n    collection.\n\n    Args:\n        model_name\
-          \ (str): HuggingFace model identifier (e.g., \"meta-llama/Llama-3.2-3B-Instruct\"\
-          ).\n        pvc_name (str): Name of the Persistent Volume Claim for data\
-          \ storage that is mounted to this component.\n        run_id (str): Unique\
-          \ identifier for this training run. Use dsl.PIPELINE_JOB_ID_PLACEHOLDER.\n\
+          \ str = \"torch-distributed\",\n    hf_token_secret_name: str = None,\n\
+          ):\n    \"\"\"Train a large language model using distributed training with\
+          \ LoRA fine-tuning.\n\n    This function creates and manages a Kubernetes\
+          \ TrainJob for distributed training\n    of a large language model using\
+          \ LoRA (Low-Rank Adaptation) fine-tuning. It handles\n    the complete training\
+          \ workflow including job creation, monitoring, and artifact\n    collection.\n\
+          \n    Args:\n        model_name (str): HuggingFace model identifier (e.g.,\
+          \ \"meta-llama/Llama-3.2-3B-Instruct\").\n        pvc_name (str): Name of\
+          \ the Persistent Volume Claim for data storage that is mounted to this component.\n\
+          \        run_id (str): Unique identifier for this training run. Use dsl.PIPELINE_JOB_ID_PLACEHOLDER.\n\
           \        dataset_path (str): Path to the training dataset within the PVC.\n\
           \        pvc_path (str): Base path within the PVC for storing outputs.\n\
           \        output_model (dsl.Output[dsl.Model]): Kubeflow output artifact\
@@ -270,12 +263,10 @@ deploymentSpec:
           \ (str, optional): Memory request per node (e.g., \"100Gi\", \"200Gi\").\
           \ Defaults to \"100Gi\".\n        trainer_runtime (str, optional): Runtime\
           \ to use for Kubeflow Trainer. Defaults to \"torch-distributed\".\n    \
-          \    save_merged_model_path (str, optional): Path to save the merged model\
-          \ (base + LoRA adapter). Useful for saving to the PVC for evaluation. Defaults\
-          \ to None.\n        hf_token_secret_name (str, optional): Name of the Kubernetes\
-          \ secret containing the Hugging Face token. Defaults to None.\n    \"\"\"\
-          \n    import json\n    import os\n    import shutil\n    import textwrap\n\
-          \    import time\n    import inspect\n\n    from kubernetes import client\
+          \    hf_token_secret_name (str, optional): Name of the Kubernetes secret\
+          \ containing the Hugging Face token. Defaults to None.\n    \"\"\"\n   \
+          \ import json\n    import os\n    import shutil\n    import textwrap\n \
+          \   import time\n    import inspect\n\n    from kubernetes import client\
           \ as k8s_client, config\n    from kubernetes.client.rest import ApiException\n\
           \n    def get_target_modules(model_name: str) -> list:\n        \"\"\"Get\
           \ appropriate LoRA target modules based on model architecture.\n\n     \
@@ -313,24 +304,24 @@ deploymentSpec:
           \ logging_steps: int,\n        save_steps: int,\n        save_strategy:\
           \ str,\n        optimizer: str,\n        adam_beta1: float,\n        adam_beta2:\
           \ float,\n        adam_epsilon: float,\n        weight_decay: float,\n \
-          \       use_flash_attention: bool,\n        save_merged_model_path: str\
-          \ = None,\n    ):\n        import os\n        import json\n        import\
-          \ torch\n        from datasets import load_from_disk\n        from peft\
-          \ import get_peft_model, LoraConfig\n        from transformers import (\n\
-          \            AutoModelForCausalLM,\n            AutoTokenizer,\n       \
-          \     TrainerCallback,\n        )\n        from trl import SFTConfig, SFTTrainer\n\
-          \n        local_rank = int(os.environ.get(\"LOCAL_RANK\", 0))\n        world_rank\
-          \ = int(os.environ.get(\"RANK\", 0))\n        world_size = int(os.environ.get(\"\
-          WORLD_SIZE\", 1))\n\n        print(\n            f\"Worker info - Local\
-          \ rank: {local_rank}, World rank: {world_rank}, World size: {world_size}\"\
-          \n        )\n\n        is_main_worker = world_rank == 0\n\n        class\
-          \ MetricsCallback(TrainerCallback):\n            def __init__(self, is_main_worker):\n\
-          \                self.is_main_worker = is_main_worker\n                self.initial_loss\
-          \ = None\n                self.final_loss = None\n\n            def on_log(self,\
-          \ args, state, control, logs=None, **kwargs):\n                if logs and\
-          \ self.is_main_worker and \"loss\" in logs:\n                    if self.initial_loss\
-          \ is None:\n                        self.initial_loss = logs[\"loss\"]\n\
-          \                    self.final_loss = logs[\"loss\"]\n\n        metrics_callback\
+          \       use_flash_attention: bool,\n    ):\n        import os\n        import\
+          \ json\n        import torch\n        from datasets import load_from_disk\n\
+          \        from peft import get_peft_model, LoraConfig\n        from transformers\
+          \ import (\n            AutoModelForCausalLM,\n            AutoTokenizer,\n\
+          \            TrainerCallback,\n        )\n        from trl import SFTConfig,\
+          \ SFTTrainer\n\n        local_rank = int(os.environ.get(\"LOCAL_RANK\",\
+          \ 0))\n        world_rank = int(os.environ.get(\"RANK\", 0))\n        world_size\
+          \ = int(os.environ.get(\"WORLD_SIZE\", 1))\n\n        print(\n         \
+          \   f\"Worker info - Local rank: {local_rank}, World rank: {world_rank},\
+          \ World size: {world_size}\"\n        )\n\n        is_main_worker = world_rank\
+          \ == 0\n\n        class MetricsCallback(TrainerCallback):\n            def\
+          \ __init__(self, is_main_worker):\n                self.is_main_worker =\
+          \ is_main_worker\n                self.initial_loss = None\n           \
+          \     self.final_loss = None\n\n            def on_log(self, args, state,\
+          \ control, logs=None, **kwargs):\n                if logs and self.is_main_worker\
+          \ and \"loss\" in logs:\n                    if self.initial_loss is None:\n\
+          \                        self.initial_loss = logs[\"loss\"]\n          \
+          \          self.final_loss = logs[\"loss\"]\n\n        metrics_callback\
           \ = MetricsCallback(is_main_worker)\n\n        print(\"Downloading and loading\
           \ model\")\n        model_kwargs = {\n            \"device_map\": \"auto\"\
           ,\n            \"torch_dtype\": torch.float16,\n            \"trust_remote_code\"\
@@ -376,17 +367,10 @@ deploymentSpec:
           \ 0) - Exporting model and metrics...\")\n\n        # Save LoRA adapter\n\
           \        model_output_path = os.path.join(pvc_path, \"adapter\")\n     \
           \   model.save_pretrained(model_output_path)\n        tokenizer.save_pretrained(model_output_path)\n\
-          \        print(\"LoRA adapter exported successfully!\")\n\n        # Merge\
-          \ LoRA adapter with base model and save merged model for evaluation\n  \
-          \      if save_merged_model_path:\n            print(\n                f\"\
-          Merging LoRA adapter with base model and saving to {save_merged_model_path}...\"\
-          \n            )\n            merged_model = model.merge_and_unload()\n \
-          \           merged_model.save_pretrained(save_merged_model_path)\n     \
-          \       tokenizer.save_pretrained(save_merged_model_path)\n            print(f\"\
-          Merged model saved to {save_merged_model_path}\")\n\n        # Clean up\
-          \ distributed process group for main worker AFTER model saving\n       \
-          \ if torch.distributed.is_initialized():\n            print(f\"Worker {world_rank}\
-          \ - Cleaning up distributed process group\")\n            torch.distributed.destroy_process_group()\n\
+          \        print(\"LoRA adapter exported successfully!\")\n\n        # Clean\
+          \ up distributed process group for main worker AFTER model saving\n    \
+          \    if torch.distributed.is_initialized():\n            print(f\"Worker\
+          \ {world_rank} - Cleaning up distributed process group\")\n            torch.distributed.destroy_process_group()\n\
           \            print(f\"Worker {world_rank} - Distributed process group destroyed\"\
           )\n\n        print(f\"Collecting essential metrics\")\n        metrics_dict\
           \ = {}\n\n        if hasattr(train_result, \"train_loss\"):\n          \
@@ -472,8 +456,7 @@ deploymentSpec:
           \                    \"adam_beta2\": adam_beta2,\n                    \"\
           adam_epsilon\": adam_epsilon,\n                    \"weight_decay\": weight_decay,\n\
           \                    \"use_flash_attention\": use_flash_attention,\n   \
-          \                 \"save_merged_model_path\": save_merged_model_path,\n\
-          \                }\n            ),\n        },\n    ]\n\n    # Build podSpecOverrides\
+          \             }\n            ),\n        },\n    ]\n\n    # Build podSpecOverrides\
           \ dynamically so HF secret is only added when provided\n    pod_volumes\
           \ = [\n        {\n            \"name\": \"dataset-pvc\",\n            \"\
           persistentVolumeClaim\": {\"claimName\": pvc_name},\n        }\n    ]\n\n\
@@ -636,8 +619,6 @@ root:
               componentInputParameter: pvc_path
             run_id:
               componentInputParameter: run_id
-            save_merged_model_path:
-              componentInputParameter: save_merged_model_path
             save_steps:
               componentInputParameter: save_steps
             save_strategy:
@@ -742,11 +723,6 @@ root:
         parameterType: STRING
       run_id:
         description: Unique identifier for this training run. Use dsl.PIPELINE_JOB_ID_PLACEHOLDER.
-        parameterType: STRING
-      save_merged_model_path:
-        description: Path to save the merged model (base + LoRA adapter). Useful for
-          saving to the PVC for evaluation. Defaults to None.
-        isOptional: true
         parameterType: STRING
       save_steps:
         description: Number of steps between model checkpoints. Defaults to None.

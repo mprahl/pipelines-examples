@@ -91,7 +91,6 @@ model artifact. Optionally merge and save a full model.
   - **train_node_gpu_request (str, default: "1")**
   - **train_node_memory_request (str, default: "100Gi")**
   - **trainer_runtime (str, default: "torch-distributed")**
-  - **save_merged_model_path (str, optional, default: None)**
   - **hf_token_secret_name (str, optional, default: None)**: Set this value if
     the input model is gated (e.g. Llama).
 
@@ -140,8 +139,8 @@ train_model_op = train_model(
     model_name="meta-llama/Llama-3.2-3B-Instruct",
     pvc_name=create_pvc_op.output,
     pvc_path="/workspace",
-    save_merged_model_path="/workspace/merged_model",
     run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
+    # Remove this if the model isn't gated
     hf_token_secret_name="hf-token",
     num_nodes=2,
     train_node_cpu_request="2",
@@ -167,6 +166,9 @@ responses generated during evaluation.
 
 - **custom_translation_dataset (system.Dataset, optional)**: Dataset saved via
   `datasets.save_to_disk` for a custom translation task.
+- **lora_adapter (system.Model, optional)**: LoRA adapter directory (model +
+  tokenizer) to apply during evaluation. Provide this when `model_path` points
+  to a base model and you want to evaluate with a fine-tuned adapter.
 
 **Inputs (parameters)**
 
@@ -221,8 +223,9 @@ import kfp.kubernetes
 
 eval_model_op = (
     evaluate_model(
-        model_path="/workspace/merged_model",
+        model_path="meta-llama/Llama-3.2-3B-Instruct",
         custom_translation_dataset=prepare_dataset_op.outputs["yoda_eval_dataset"],
+        lora_adapter=train_model_op.outputs["output_model"],  # optional
     )
     .set_caching_options(enable_caching=False)
     .set_accelerator_type("nvidia.com/gpu")
@@ -230,10 +233,10 @@ eval_model_op = (
     .set_cpu_request("4000m")
     .set_memory_request("80G")
 ).after(train_model_op)
-
-kfp.kubernetes.mount_pvc(
+# Remove this if the model isn't gated
+kfp.kubernetes.use_secret_as_env(
     task=eval_model_op,
-    pvc_name=create_pvc_op.output,
-    mount_path="/workspace",
+    secret_name="hf-token",
+    secret_key_to_env={"HF_TOKEN": "HF_TOKEN"},
 )
 ```

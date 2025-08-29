@@ -165,7 +165,7 @@ def train_model_pipeline(
             train_node_gpu_request=train_node_gpu_request,
             train_node_memory_request=train_node_memory_request,
             trainer_runtime=trainer_runtime,
-            save_merged_model_path="/workspace/merged_model",
+            # Remove this if the model is not gated
             hf_token_secret_name="hf-token",
         )
         .after(prepare_dataset_op)
@@ -177,10 +177,12 @@ def train_model_pipeline(
         pvc_name=create_pvc_op.output,
         mount_path="/workspace",
     )
+    kfp.kubernetes.DeletePVC(pvc_name=create_pvc_op.output).after(train_model_op)
 
     eval_model_op = (
         evaluate_model(
-            model_path="/workspace/merged_model",
+            model_path=model_name,
+            lora_adapter=train_model_op.outputs["output_model"],
             batch_size=eval_batch_size,
             limit=eval_limit,
             max_model_len=eval_max_model_len,
@@ -199,13 +201,13 @@ def train_model_pipeline(
         .set_cpu_request(eval_cpu_request)
         .set_memory_request(eval_memory_request)
     ).after(train_model_op)
-    kfp.kubernetes.mount_pvc(
-        task=eval_model_op,
-        pvc_name=create_pvc_op.output,
-        mount_path="/workspace",
-    )
 
-    kfp.kubernetes.DeletePVC(pvc_name=create_pvc_op.output).after(eval_model_op)
+    # Remove this if the model is not gated
+    kfp.kubernetes.use_secret_as_env(
+        task=eval_model_op,
+        secret_name="hf-token",
+        secret_key_to_env={"HF_TOKEN": "HF_TOKEN"},
+    )
 
 
 if __name__ == "__main__":

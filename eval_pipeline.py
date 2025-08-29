@@ -59,6 +59,10 @@ def evaluate_model_pipeline(
     """
 
     yoda_dataset_task = prepare_yoda_dataset(train_split_ratio=train_split_ratio)
+    lora_adapter_task = dsl.importer(
+        artifact_uri='s3://rhods-dsp-dev/train-and-evaluate/787d8f06-97e3-413d-891f-e786740b8828/train-model/baeb9304-bc8f-4b43-86bd-0085bd7794f5/output_model',
+        artifact_class=dsl.Model,
+    )
 
     evaluate_model_task = (
         evaluate_model(
@@ -74,6 +78,7 @@ def evaluate_model_pipeline(
             verbosity=verbosity,
             max_batch_size=max_batch_size,
             custom_translation_dataset=yoda_dataset_task.outputs["yoda_eval_dataset"],
+            lora_adapter=lora_adapter_task.output,
         )
         .set_accelerator_type("nvidia.com/gpu")
         .set_accelerator_limit(accelerator_limit)

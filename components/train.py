@@ -40,7 +40,6 @@ def train_model(
     train_node_gpu_request: str = "1",
     train_node_memory_request: str = "100Gi",
     trainer_runtime: str = "torch-distributed",
-    save_merged_model_path: str = None,
     hf_token_secret_name: str = None,
 ):
     """Train a large language model using distributed training with LoRA fine-tuning.
@@ -78,7 +77,6 @@ def train_model(
         train_node_gpu_request (str, optional): GPU request per node (e.g., "1", "2"). Defaults to "1".
         train_node_memory_request (str, optional): Memory request per node (e.g., "100Gi", "200Gi"). Defaults to "100Gi".
         trainer_runtime (str, optional): Runtime to use for Kubeflow Trainer. Defaults to "torch-distributed".
-        save_merged_model_path (str, optional): Path to save the merged model (base + LoRA adapter). Useful for saving to the PVC for evaluation. Defaults to None.
         hf_token_secret_name (str, optional): Name of the Kubernetes secret containing the Hugging Face token. Defaults to None.
     """
     import json
@@ -168,7 +166,6 @@ def train_model(
         adam_epsilon: float,
         weight_decay: float,
         use_flash_attention: bool,
-        save_merged_model_path: str = None,
     ):
         import os
         import json
@@ -297,16 +294,6 @@ def train_model(
         model.save_pretrained(model_output_path)
         tokenizer.save_pretrained(model_output_path)
         print("LoRA adapter exported successfully!")
-
-        # Merge LoRA adapter with base model and save merged model for evaluation
-        if save_merged_model_path:
-            print(
-                f"Merging LoRA adapter with base model and saving to {save_merged_model_path}..."
-            )
-            merged_model = model.merge_and_unload()
-            merged_model.save_pretrained(save_merged_model_path)
-            tokenizer.save_pretrained(save_merged_model_path)
-            print(f"Merged model saved to {save_merged_model_path}")
 
         # Clean up distributed process group for main worker AFTER model saving
         if torch.distributed.is_initialized():
@@ -482,7 +469,6 @@ torchrun ephemeral_component.py"""
                     "adam_epsilon": adam_epsilon,
                     "weight_decay": weight_decay,
                     "use_flash_attention": use_flash_attention,
-                    "save_merged_model_path": save_merged_model_path,
                 }
             ),
         },

@@ -5,44 +5,10 @@ evaluating and finetuning LLMs.
 
 ## Table of contents
 
-- [prepare_yoda_dataset](#prepare_yoda_dataset): Prepare train/eval splits from
-  the Yoda sentences dataset
 - [train_model](#train_model): Distributed LoRA fine-tuning via Kubeflow Trainer
   v2, exports adapter + metrics
 - [evaluate_model](#evaluate_model): Evaluate models with lm-eval-harness (vLLM)
   on configurable tasks
-
-## prepare_yoda_dataset
-
-**Purpose**: Download and preprocess the
-[`dvgodoy/yoda_sentences`](https://huggingface.co/datasets/dvgodoy/yoda_sentences)
-dataset into train/eval splits with the expected `prompt`/`completion` columns.
-
-**Inputs (parameters)**
-
-- **train_split_ratio (float, optional, default: 0.8)**: Ratio of data to use
-  for training (0.0–1.0).
-
-**Outputs (artifacts)**
-
-- **yoda_train_dataset (system.Dataset)**: The train split of the dataset.
-- **yoda_eval_dataset (system.Dataset)** The evaluation split of the dataset.
-
-**Load from YAML**
-
-```python
-from kfp import components as kfp_components
-
-prepare_yoda_dataset = kfp_components.load_component_from_url(
-    "https://raw.githubusercontent.com/mprahl/pipelines-examples/main/components/yoda_dataset_component.yaml"
-)
-```
-
-**Minimal usage**
-
-```python
-prep = prepare_yoda_dataset(train_split_ratio=0.8)
-```
 
 ## train_model
 

@@ -421,7 +421,7 @@ cat > ephemeral_component.py << 'EOF'
 EOF
 
 echo "Starting distributed training..."
-torchrun ephemeral_component.py"""
+torchrun --nproc_per_node=1 ephemeral_component.py"""
 
     command = ["bash", "-c", install_script]
 

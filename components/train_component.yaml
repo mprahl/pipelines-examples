@@ -28,7 +28,7 @@
 #    save_strategy: str [Default: 'epoch']
 #    train_node_cpu_request: str [Default: '2']
 #    train_node_gpu_request: str [Default: '1']
-#    train_node_memory_request: str [Default: '100Gi']
+#    train_node_memory_request: str [Default: '50Gi']
 #    trainer_runtime: str [Default: 'torch-distributed']
 #    use_flash_attention: bool [Default: False]
 #    weight_decay: float [Default: 0.01]
@@ -146,7 +146,7 @@ components:
           isOptional: true
           parameterType: STRING
         train_node_memory_request:
-          defaultValue: 100Gi
+          defaultValue: 50Gi
           description: Memory request per node (e.g., "100Gi", "200Gi"). Defaults
             to "100Gi".
           isOptional: true
@@ -192,7 +192,7 @@ deploymentSpec:
         - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
           \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
           \ python3 -m pip install --quiet --no-warn-script-location 'kubernetes'\
-          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.1'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.14.2'\
           \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
           $0\" \"$@\"\n"
         - sh
@@ -219,7 +219,7 @@ deploymentSpec:
           \ float = 0.01,\n    # Performance optimization\n    use_flash_attention:\
           \ bool = False,\n    # Infrastructure parameters\n    num_nodes: int = 2,\n\
           \    train_node_cpu_request: str = \"2\",\n    train_node_gpu_request: str\
-          \ = \"1\",\n    train_node_memory_request: str = \"100Gi\",\n    trainer_runtime:\
+          \ = \"1\",\n    train_node_memory_request: str = \"50Gi\",\n    trainer_runtime:\
           \ str = \"torch-distributed\",\n    hf_token_secret_name: str = None,\n\
           ):\n    \"\"\"Train a large language model using distributed training with\
           \ LoRA fine-tuning.\n\n    This function creates and manages a Kubernetes\
@@ -430,26 +430,26 @@ deploymentSpec:
           \nPIP_DISABLE_PIP_VERSION_CHECK=1 python -m pip install --user --quiet --no-warn-script-location\
           \ {packages_str}\n\necho \"Creating training script...\"\ncat > ephemeral_component.py\
           \ << 'EOF'\n{func_code}\nEOF\n\necho \"Starting distributed training...\"\
-          \ntorchrun ephemeral_component.py\"\"\"\n\n    command = [\"bash\", \"-c\"\
-          , install_script]\n\n    print(f\"Generated command: {command}\")\n    print(f\"\
-          Command length: {len(command)}\")\n    print(f\"Command type: {type(command)}\"\
-          )\n\n    print(\"Loading Kubernetes configuration...\")\n    try:\n    \
-          \    config.load_incluster_config()\n        print(\"Loaded in-cluster Kubernetes\
-          \ configuration\")\n    except config.ConfigException:\n        config.load_kube_config()\n\
-          \        print(\"Loaded kubeconfig Kubernetes configuration\")\n\n    print(\"\
-          Creating Kubernetes API client...\")\n    api_client = k8s_client.ApiClient()\n\
-          \    custom_objects_api = k8s_client.CustomObjectsApi(api_client)\n    print(\"\
-          Successfully created Kubernetes API client\")\n\n    print(\"Defining TrainJob\
-          \ resource...\")\n\n    env_vars = [\n        {\"name\": \"HOME\", \"value\"\
-          : \"/tmp\"},\n        {\n            \"name\": \"TRAINING_CONFIG\",\n  \
-          \          \"value\": json.dumps(\n                {\n                 \
-          \   \"lora_rank\": lora_rank,\n                    \"learning_rate\": learning_rate,\n\
-          \                    \"batch_size\": batch_size,\n                    \"\
-          max_length\": max_length,\n                    \"model_name\": model_name,\n\
-          \                    \"dataset_path\": dataset_path,\n                 \
-          \   \"epochs\": epochs,\n                    \"pvc_path\": pvc_path,\n \
-          \                   \"target_modules\": target_modules,\n              \
-          \      \"max_steps\": max_steps,\n                    \"logging_steps\"\
+          \ntorchrun --nproc_per_node=1 ephemeral_component.py\"\"\"\n\n    command\
+          \ = [\"bash\", \"-c\", install_script]\n\n    print(f\"Generated command:\
+          \ {command}\")\n    print(f\"Command length: {len(command)}\")\n    print(f\"\
+          Command type: {type(command)}\")\n\n    print(\"Loading Kubernetes configuration...\"\
+          )\n    try:\n        config.load_incluster_config()\n        print(\"Loaded\
+          \ in-cluster Kubernetes configuration\")\n    except config.ConfigException:\n\
+          \        config.load_kube_config()\n        print(\"Loaded kubeconfig Kubernetes\
+          \ configuration\")\n\n    print(\"Creating Kubernetes API client...\")\n\
+          \    api_client = k8s_client.ApiClient()\n    custom_objects_api = k8s_client.CustomObjectsApi(api_client)\n\
+          \    print(\"Successfully created Kubernetes API client\")\n\n    print(\"\
+          Defining TrainJob resource...\")\n\n    env_vars = [\n        {\"name\"\
+          : \"HOME\", \"value\": \"/tmp\"},\n        {\n            \"name\": \"TRAINING_CONFIG\"\
+          ,\n            \"value\": json.dumps(\n                {\n             \
+          \       \"lora_rank\": lora_rank,\n                    \"learning_rate\"\
+          : learning_rate,\n                    \"batch_size\": batch_size,\n    \
+          \                \"max_length\": max_length,\n                    \"model_name\"\
+          : model_name,\n                    \"dataset_path\": dataset_path,\n   \
+          \                 \"epochs\": epochs,\n                    \"pvc_path\"\
+          : pvc_path,\n                    \"target_modules\": target_modules,\n \
+          \                   \"max_steps\": max_steps,\n                    \"logging_steps\"\
           : logging_steps,\n                    \"save_steps\": save_steps,\n    \
           \                \"save_strategy\": save_strategy,\n                   \
           \ \"optimizer\": optimizer,\n                    \"adam_beta1\": adam_beta1,\n\
@@ -745,7 +745,7 @@ root:
         isOptional: true
         parameterType: STRING
       train_node_memory_request:
-        defaultValue: 100Gi
+        defaultValue: 50Gi
         description: Memory request per node (e.g., "100Gi", "200Gi"). Defaults to
           "100Gi".
         isOptional: true
@@ -777,4 +777,4 @@ root:
           schemaTitle: system.Model
           schemaVersion: 0.0.1
 schemaVersion: 2.1.0
-sdkVersion: kfp-2.14.1
+sdkVersion: kfp-2.14.2

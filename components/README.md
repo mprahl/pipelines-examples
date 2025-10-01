@@ -67,7 +67,6 @@ model artifact. Optionally merge and save a full model.
 - Required:
   - **model_name (str)**: Hugging Face model id (e.g.,
     `meta-llama/Llama-3.2-3B-Instruct`) or a path to a model directory on disk.
-  - **pvc_name (str)**: PVC name mounted for data/model I/O.
   - **pvc_path (str)**: Base path in the PVC for outputs.
   - **run_id (str)**: Unique run id (use `dsl.PIPELINE_JOB_ID_PLACEHOLDER`).
 - Optional:
@@ -87,12 +86,7 @@ model artifact. Optionally merge and save a full model.
   - **weight_decay (float, default: 0.01)**
   - **use_flash_attention (bool, default: False)**
   - **num_nodes (int, default: 2)**
-  - **train_node_cpu_request (str, default: "2")**
-  - **train_node_gpu_request (str, default: "1")**
-  - **train_node_memory_request (str, default: "100Gi")**
   - **trainer_runtime (str, default: "torch-distributed")**
-  - **hf_token_secret_name (str, optional, default: None)**: Set this value if
-    the input model is gated (e.g. Llama).
 
 **Outputs (artifacts)**
 
@@ -117,8 +111,7 @@ from kfp import dsl
 train = train_model(
     input_dataset=prep.outputs["yoda_train_dataset"],
     model_name="meta-llama/Llama-3.2-3B-Instruct",
-    pvc_name="my-pvc",
-    pvc_path="/workspace",
+    pvc_path=dsl.WORKSPACE_PATH_PLACEHOLDER,
     run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
 )
 ```
@@ -129,30 +122,18 @@ train = train_model(
 from kfp import dsl
 import kfp.kubernetes
 
-create_pvc_op = kfp.kubernetes.CreatePVC(
-    access_modes=["ReadWriteMany"],
-    size="20Gi",
-)
-
 train_model_op = train_model(
     input_dataset=prep.outputs["yoda_train_dataset"],
     model_name="meta-llama/Llama-3.2-3B-Instruct",
-    pvc_name=create_pvc_op.output,
-    pvc_path="/workspace",
+    pvc_path=dsl.WORKSPACE_PATH_PLACEHOLDER,
     run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
-    # Remove this if the model isn't gated
-    hf_token_secret_name="hf-token",
     num_nodes=2,
-    train_node_cpu_request="2",
-    train_node_gpu_request="1",
-    train_node_memory_request="80Gi",
-)
-
-kfp.kubernetes.mount_pvc(
-    task=train_model_op,
-    pvc_name=create_pvc_op.output,
-    mount_path="/workspace",
-)
+).set_cpu_request("2")
+  .set_cpu_limit("2")
+  .set_memory_request("30Gi")
+  .set_memory_limit("30Gi")
+  .set_accelerator_type("nvidia.com/gpu")
+  .set_accelerator_limit("1")
 ```
 
 ## evaluate_model

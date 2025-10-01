@@ -9,6 +9,18 @@ from components import evaluate_model, train_model, prepare_yoda_dataset
 @dsl.pipeline(
     name="Train and evaluate",
     description="Provides complete training and evaluation of an LLM model",
+    pipeline_config=dsl.PipelineConfig(
+        workspace=dsl.WorkspaceConfig(
+            size="20Gi",
+            kubernetes=dsl.KubernetesWorkspaceConfig(
+                # Change this to the storage class name you want to use.
+                pvcSpecPatch={
+                    "accessModes": ["ReadWriteMany"],
+                    "storageClassName": "efs-sc",
+                }
+            )
+        ),
+    )
 )
 def train_model_pipeline(
     model_name: str = "meta-llama/Llama-3.2-3B-Instruct",
@@ -37,9 +49,6 @@ def train_model_pipeline(
     train_node_gpu_request: str = "1",
     train_node_memory_request: str = "100Gi",
     trainer_runtime: str = "torch-distributed",
-    # Storage parameters
-    storage_class_name: Optional[str] = None,
-    storage_size: str = "20Gi",
     # Evaluation parameters
     eval_batch_size: int = 2,
     eval_limit: int = None,
@@ -93,8 +102,6 @@ def train_model_pipeline(
         train_node_memory_request (str, optional): Memory per node (100Gi=basic, 200Gi+=memory-intensive models).
             Defaults to "100Gi".
         trainer_runtime (str, optional): Runtime to use for Kubeflow Trainer. Defaults to "torch-distributed".
-        storage_class_name (str, optional): Storage class name for PVC creation. Defaults to None.
-        storage_size (str, optional): Storage size for PVC creation. Defaults to "20Gi".
         eval_batch_size (int, optional): Batch size for model evaluation. Defaults to 2.
         eval_limit (int, optional): Maximum number of examples to evaluate per task. If None, evaluates all available examples. Defaults to None.
         eval_max_model_len (int, optional): Maximum sequence length for the model during evaluation. Defaults to 4096.
@@ -127,20 +134,13 @@ def train_model_pipeline(
         .set_retry(3)
     )
 
-    create_pvc_op = kfp.kubernetes.CreatePVC(
-        access_modes=["ReadWriteMany"],
-        size=storage_size,
-        storage_class_name=storage_class_name,
-    )
-
     train_model_op = (
         train_model(
-            pvc_name=create_pvc_op.output,
             model_name=model_name,
             epochs=train_epochs,
             run_id=dsl.PIPELINE_JOB_ID_PLACEHOLDER,
             input_dataset=prepare_dataset_op.outputs["yoda_train_dataset"],
-            pvc_path="/workspace",
+            pvc_path=dsl.WORKSPACE_PATH_PLACEHOLDER,
             # Pass through configuration parameters
             lora_rank=train_lora_rank,
             learning_rate=train_learning_rate,
@@ -161,23 +161,24 @@ def train_model_pipeline(
             use_flash_attention=train_use_flash_attention,
             # Infrastructure parameters
             num_nodes=train_num_nodes,
-            train_node_cpu_request=train_node_cpu_request,
-            train_node_gpu_request=train_node_gpu_request,
-            train_node_memory_request=train_node_memory_request,
             trainer_runtime=trainer_runtime,
-            # Remove this if the model is not gated
-            hf_token_secret_name="hf-token",
         )
         .after(prepare_dataset_op)
         .set_caching_options(enable_caching=False)
+        .set_cpu_request(train_node_cpu_request)
+        .set_cpu_limit(train_node_cpu_request)
+        .set_memory_request(train_node_memory_request)
+        .set_memory_limit(train_node_memory_request)
+        .set_accelerator_type("nvidia.com/gpu")
+        .set_accelerator_limit(train_node_gpu_request)
     )
 
-    kfp.kubernetes.mount_pvc(
+    # Remove this if the model is not gated
+    kfp.kubernetes.use_secret_as_env(
         task=train_model_op,
-        pvc_name=create_pvc_op.output,
-        mount_path="/workspace",
+        secret_name="hf-token",
+        secret_key_to_env={"HF_TOKEN": "HF_TOKEN"},
     )
-    kfp.kubernetes.DeletePVC(pvc_name=create_pvc_op.output).after(train_model_op)
 
     eval_model_op = (
         evaluate_model(

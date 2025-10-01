@@ -5,12 +5,20 @@ import kfp
 
 @dsl.component(
     base_image="registry.access.redhat.com/ubi9/python-311:latest",
+    kfp_package_path="git+https://github.com/kubeflow/pipelines@master#egg=kfp&subdirectory=sdk/python",
     packages_to_install=["kubernetes"],
+    task_config_passthroughs=[
+        dsl.TaskConfigField.RESOURCES,
+        dsl.TaskConfigField.KUBERNETES_TOLERATIONS,
+        dsl.TaskConfigField.KUBERNETES_NODE_SELECTOR,
+        dsl.TaskConfigField.KUBERNETES_AFFINITY,
+        dsl.TaskConfigPassthrough(field=dsl.TaskConfigField.ENV, apply_to_task=True),
+        dsl.TaskConfigPassthrough(field=dsl.TaskConfigField.KUBERNETES_VOLUMES, apply_to_task=True),
+    ],
 )
 def train_model(
     input_dataset: dsl.Input[dsl.Dataset],
     model_name: str,
-    pvc_name: str,
     run_id: str,
     pvc_path: str,
     output_model: dsl.Output[dsl.Model],
@@ -36,11 +44,8 @@ def train_model(
     use_flash_attention: bool = False,
     # Infrastructure parameters
     num_nodes: int = 2,
-    train_node_cpu_request: str = "2",
-    train_node_gpu_request: str = "1",
-    train_node_memory_request: str = "50Gi",
     trainer_runtime: str = "torch-distributed",
-    hf_token_secret_name: str = None,
+    kubernetes_config: dsl.TaskConfig = None,
 ):
     """Train a large language model using distributed training with LoRA fine-tuning.
 
@@ -51,7 +56,6 @@ def train_model(
 
     Args:
         model_name (str): HuggingFace model identifier (e.g., "meta-llama/Llama-3.2-3B-Instruct").
-        pvc_name (str): Name of the Persistent Volume Claim for data storage that is mounted to this component.
         run_id (str): Unique identifier for this training run. Use dsl.PIPELINE_JOB_ID_PLACEHOLDER.
         dataset_path (str): Path to the training dataset within the PVC.
         pvc_path (str): Base path within the PVC for storing outputs.
@@ -73,11 +77,7 @@ def train_model(
         weight_decay (float, optional): Weight decay for regularization. Defaults to 0.01.
         use_flash_attention (bool, optional): Whether to use Flash Attention 2 for improved performance. Defaults to False.
         num_nodes (int, optional): Number of nodes for distributed training. Defaults to 2.
-        train_node_cpu_request (str, optional): CPU request per node (e.g., "2", "4"). Defaults to "2".
-        train_node_gpu_request (str, optional): GPU request per node (e.g., "1", "2"). Defaults to "1".
-        train_node_memory_request (str, optional): Memory request per node (e.g., "100Gi", "200Gi"). Defaults to "100Gi".
         trainer_runtime (str, optional): Runtime to use for Kubeflow Trainer. Defaults to "torch-distributed".
-        hf_token_secret_name (str, optional): Name of the Kubernetes secret containing the Hugging Face token. Defaults to None.
     """
     import json
     import os
@@ -472,31 +472,8 @@ torchrun --nproc_per_node=1 ephemeral_component.py"""
                 }
             ),
         },
+        *(kubernetes_config.env or []),
     ]
-
-    # Build podSpecOverrides dynamically so HF secret is only added when provided
-    pod_volumes = [
-        {
-            "name": "dataset-pvc",
-            "persistentVolumeClaim": {"claimName": pvc_name},
-        }
-    ]
-
-    if hf_token_secret_name:
-        pod_volumes.append(
-            {
-                "name": "hf-token",
-                "secret": {"secretName": hf_token_secret_name},
-            }
-        )
-        env_vars.append(
-            {
-                "name": "HF_TOKEN",
-                "valueFrom": {
-                    "secretKeyRef": {"name": hf_token_secret_name, "key": "HF_TOKEN"}
-                },
-            }
-        )
 
     train_job = {
         "apiVersion": "trainer.kubeflow.org/v1alpha1",
@@ -506,33 +483,22 @@ torchrun --nproc_per_node=1 ephemeral_component.py"""
             "runtimeRef": {"name": trainer_runtime},
             "trainer": {
                 "numNodes": num_nodes,
-                "resourcesPerNode": {
-                    "requests": {
-                        "cpu": train_node_cpu_request,
-                        "memory": train_node_memory_request,
-                        "nvidia.com/gpu": train_node_gpu_request,
-                    },
-                    "limits": {
-                        "cpu": train_node_cpu_request,
-                        "memory": train_node_memory_request,
-                        "nvidia.com/gpu": train_node_gpu_request,
-                    },
-                },
+                "resourcesPerNode": kubernetes_config.resources,
                 "env": env_vars,
                 "command": command,
             },
             "podSpecOverrides": [
                 {
                     "targetJobs": [{"name": "node"}],
-                    "volumes": pod_volumes,
+                    "volumes": kubernetes_config.volumes,
                     "containers": [
                         {
                             "name": "node",
-                            "volumeMounts": [
-                                {"name": "dataset-pvc", "mountPath": "/workspace"}
-                            ],
+                            "volumeMounts": kubernetes_config.volume_mounts,
                         }
                     ],
+                    "nodeSelector": kubernetes_config.node_selector,
+                    "tolerations": kubernetes_config.tolerations,
                 }
             ],
         },
@@ -544,7 +510,6 @@ torchrun --nproc_per_node=1 ephemeral_component.py"""
 
     print(f"  - Runtime: {trainer_runtime}")
     print(f"  - Nodes: {num_nodes}")
-    print(f"  - PVC: {pvc_name}")
     print(f"  - Model: {model_name}")
     print(f"  - Dataset: {dataset_path}")
     print(f"  - Epochs: {epochs}")

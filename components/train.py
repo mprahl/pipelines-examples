@@ -38,7 +38,7 @@ def train_model(
     num_nodes: int = 2,
     train_node_cpu_request: str = "2",
     train_node_gpu_request: str = "1",
-    train_node_memory_request: str = "100Gi",
+    train_node_memory_request: str = "50Gi",
     trainer_runtime: str = "torch-distributed",
     hf_token_secret_name: str = None,
 ):

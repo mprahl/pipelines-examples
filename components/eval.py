@@ -24,7 +24,7 @@ def evaluate_model(
     limit: int = None,
     max_model_len: int = 4096,
     gpu_memory_utilization: float = 0.8,
-    dtype: str = "bfloat16",
+    dtype: str = "auto",
     add_bos_token: bool = True,
     include_classification_tasks: bool = True,
     include_summarization_tasks: bool = True,
